@@ -1,164 +1,149 @@
-# jevscope — SPEC v1
+# jevscope — SPEC v2
 
-**Status:** draft, awaiting Codex review
+**Status:** draft, second revision. Addresses all seven blockers from the Codex
+review of v1 (`jevscope-codex-spec-review.md`, verdict `NOT_READY` at `403849a`).
 **Date:** 2026-10-02
 **Repo:** `Gonzih/jevscope` (public)
 
 ---
 
+## 0. What changed from v1, and why
+
+| # | v1 said | v2 says | Why |
+|---|---|---|---|
+| B3 | Re-verify by attribute fingerprint, call it a "sound identity guard" | **No generic execution.** `apply` requires an approval token bound to one decision + snapshot generation, and an allowlisted primitive. The residual check-to-use race is disclosed, not papered over. | AX offers no transaction combining snapshot checks with the target app's action. No fingerprint closes it. |
+| B4 | `axError` → refusal | Tri-state outcome: `refused` (nothing dispatched), `applied` (dispatched, confirmed), `unknownOutcome` (dispatched, unconfirmed) | `AXUIElementPerformAction` may time out *after* taking effect |
+| B5 | "configurable thresholds", no questions, no schema | **§5** is the complete versioned contract: exact questions, operation vocabulary, composition, validation, thresholds, approval | An implementer was being asked to invent safety policy |
+| B6 | Value-set and action conflated | **§6** enumerates primitives; `performAction` and `setValue` are separate capabilities | Writable attributes ≠ named actions |
+| B7 | 28k token budget, hand-wave ranking | **§7** gives one deterministic ranking, a **byte-based** budget, escaping, stable IDs, pruned-target handling | Tokens were unaccounted; ranking decided the result |
+| B8 | Refuse on any non-success read | **§8** phase-specific error table; completeness tracking; fake-backend contract | Contradicted optional-metadata handling |
+| B9 | Two live `eval` runs must be identical | **§9** separates deterministic offline replay from pinned live evaluation | Latency, timestamps and `jev-latest` all vary |
+| B10 | Committed captures + "secret-free traces" | **§10** separates raw (private) from sanitized (public); redaction rules; non-disclosing secret check | The spec contradicted itself |
+
+---
+
 ## 1. Problem
 
-There is no reproducible, openly specified way to answer one question: **how
-well does TypeSafe Jev actually decide macOS actions from the raw Accessibility
-tree?** Every published Jev computer-use project ships a working agent and an
-author-reported number. None ships a harness a third party can run.
+There is no reproducible, openly specified way to answer: **how well does
+TypeSafe Jev decide macOS actions from the raw Accessibility tree?** Every
+published Jev computer-use project ships an agent and an author-reported number.
+None ships a harness a third party can run.
 
-## 2. Prior art — stated plainly, up front
+## 2. Prior art — stated plainly
 
-This concept is **not novel**. Six projects already do it. This is the single
-most important thing a reader should learn from this repository.
+The concept is **not novel**.
 
 | Project | Lang / license | Perception | Jev role |
 |---|---|---|---|
-| [savka777/jev-use](https://github.com/savka777/jev-use) | Swift, MIT, 114★ | macOS AX tree only | operation + numbered target |
-| [awlevin/typesafe-computer-use](https://github.com/awlevin/typesafe-computer-use) | Python, MIT, 1144★ | Vision OCR ⊕ AX tree | 3 Choices/step |
-| [jcpsimmons/jev-macos-loop](https://github.com/jcpsimmons/jev-macos-loop) | JS+Swift, AGPL-3.0 | ScreenCaptureKit + OmniParser + Vision OCR ⊕ AX | finite choice over element IDs |
-| [paulsmith/computer-use-jev](https://github.com/paulsmith/computer-use-jev) | Go + Swift worker, MIT | AX tree only | action / target / done / needs-text |
-| [Eronmmer/jev-cua](https://github.com/Eronmmer/jev-cua) | TypeScript, AGPL | AX first, approved screenshot fallback | workflow router only |
-| [trycua/cua `jev-use` recipe](https://github.com/trycua/cua/tree/main/libs/cua-driver/examples/jev-use) | Python + TS | macOS AX / Windows UIA / Linux AT-SPI | capped candidate choice |
+| [savka777/jev-use](https://github.com/savka777/jev-use) | Swift, MIT | macOS AX tree only | operation + target |
+| [awlevin/typesafe-computer-use](https://github.com/awlevin/typesafe-computer-use) | Python, MIT, 1144★ | Vision OCR ⊕ AX | 3 Choices/step |
+| [jcpsimmons/jev-macos-loop](https://github.com/jcpsimmons/jev-macos-loop) | JS+Swift, AGPL-3.0 | ScreenCaptureKit + OmniParser ⊕ AX | finite choice |
+| [paulsmith/computer-use-jev](https://github.com/paulsmith/computer-use-jev) | Go + Swift worker, MIT | AX tree only | action/target/done/needs-text |
+| [Eronmmer/jev-cua](https://github.com/Eronmmer/jev-cua) | TypeScript, AGPL | AX first, approved fallback | workflow router |
+| [trycua/cua `jev-use`](https://github.com/trycua/cua/tree/main/libs/cua-driver/examples/jev-use) | Python + TS | macOS AX / Win UIA / Linux AT-SPI | capped candidate choice |
 
-`savka777/jev-use` is a Swift macOS app whose README describes the naive
-version of this project almost clause-for-clause.
+`savka777/jev-use` is a Swift macOS app whose README describes the naive version
+of this project almost clause-for-clause. **We do not claim to be first.**
 
-**We do not claim to be first.** The differentiator, and the only one we can
-actually defend, is §3.
+Our differentiator: an open spec, a reproducible harness, verified confidence
+semantics, and an honest account of what the AX API cannot guarantee.
 
-## 3. What we claim to build
+## 3. Scope of v1
 
-1. **An open spec** — the Jev question contract, the element-table format, the
-   confidence semantics, and every refusal rule written down and versioned.
-2. **A reproducible eval harness** — a versioned corpus of real macOS
-   Accessibility snapshots, a runner that reports decision accuracy, refusal
-   rate, and latency, and a committed results file. A third party can re-run it.
-3. **Correct confidence semantics** — see §6. Every existing project gates on a
-   field whose meaning is not what the docs claim. We measure this (§6.3) and
-   implement the corrected version.
-4. **A fail-closed action layer** — the handle-resolution rules in §7, with the
-   refusal taxonomy as part of the public API.
+**In:** observe the AX tree; rank candidates; ask Jev typed questions; gate the
+answer; emit a decision; execute a **narrow allowlist** of primitives under an
+explicit approval token; evaluate against a committed corpus.
 
-We deliberately do **not** ship an autonomous agent loop in v1. The eval harness
-is the deliverable; the loop is downstream of it.
+**Out:** autonomous multi-step loops; screenshots/OCR/pixels; coordinate
+clicking; CGEvent synthesis; submit/send/delete/purchase; a GUI.
 
 ## 4. Verified constraints
 
-Everything in this section was measured on this machine against the live API on
-2026-10-02, or read from canonical TypeSafe docs. Marked facts are reproducible.
+Measured on this machine, 2026-10-02. Evidence under `evidence/`.
 
 ### 4.1 Jev is text-only
-> "Jev currently accepts text input only. It evaluates strings, JSON objects,
-> and arrays of text. Images, audio, and video are not supported (yet)."
-> — [docs.typesafe.ai/concepts/system-one](https://docs.typesafe.ai/concepts/system-one)
+> "Jev currently accepts text input only… Images, audio, and video are not
+> supported (yet)." — [docs.typesafe.ai/concepts/system-one](https://docs.typesafe.ai/concepts/system-one)
 
-**Consequence:** no pixels ever leave the machine. The entire perception layer is
-the Accessibility tree. This is a hard architectural constraint, not a choice.
+Pixels never leave the machine. The AX tree is the entire perception layer.
 
-### 4.2 There is no official Swift SDK
-Official SDKs are Python `typesafe-sdk` and JS/TS `@typesafe-ai/sdk`. No Swift,
-Kotlin, or Java SDK exists. *(`[PARTIAL]` — an unofficial Kotlin Multiplatform
-client `itisnomatter/kojev` exists; the complete official list was not
-enumerated from `/sdk`.)*
+### 4.2 No official Swift SDK
+Official SDKs are Python `typesafe-sdk` and `@typesafe-ai/sdk`. **UNVERIFIED:**
+the complete official list — `/sdk` was not enumerated directly. A hand-written
+`URLSession` client is required and is the right call anyway.
 
-**Consequence:** hand-written `URLSession` client. Correct for a pure-Swift
-desktop tool regardless.
+### 4.3 No Domain-Specific Models
+`/models` lists one model, `jev-1.13.0`, with aliases `jev-latest` and
+`jev-preview`. No UI/computer-use model exists.
 
-### 4.3 There are no Domain-Specific Models
-`https://docs.typesafe.ai/models` lists exactly one model, `jev-1.13.0`, with two
-aliases. No UI, computer-use, or macOS model exists. "DSM" is not a documented
-TypeSafe concept. Jev is shaped to a domain **through the request**, never
-through per-account weights.
+### 4.4 Confidence — verified live
+| Primitive | Formula | Status |
+|---|---|---|
+| Choice | `(p_max − 1/n)/(1 − 1/n)` | confirmed, max err **0.005** (8 samples) |
+| Score | `max(0, 1 − Σ p_i·\|i − argmax(p)\| / MAD_unif)` | confirmed, max err **0.020** (24 samples) |
+| Noul | **no field returned**; `noul` is P(yes) | verified 6/6, incl. negative polarity |
 
-### 4.4 Model aliases — live `GET /v1/models` (HTTP 200)
-```json
-{"models":[
-  {"name":"jev-latest", "release_date":"2026-09-10T18:38:01Z"},
-  {"name":"jev-preview","release_date":"2026-09-10T18:39:06Z"}]}
-```
-Responses carry a concrete version, e.g. `"model": "jev-1.13.0"`. jevscope
-defaults to `jev-latest` and **records the resolved version in every trace**.
+> **Correction.** v1 claimed the Score formula did not reproduce. That was an
+> **error in the analysis** — `m` is the *modal* level, not the returned mean
+> `score`. Codex found it; recalculated max error is 0.020.
+> See `evidence/score-confidence-findings.md`.
+
+> **Threshold trap.** Choice confidence is an **affine normalization** of
+> `p_max`, not `p_max`. With 3 options, `p_max = 0.8` → confidence **0.7**.
+> A threshold is not interchangeable between the two. jevscope gates on
+> `confidence` and never substitutes a probability threshold for it.
 
 ### 4.5 Undocumented error: HTTP 400 `max_tokens_exceeded`
-The API reference documents 401, 422, 429, 529. It does **not** document 400.
-The live API returns it:
-```
-HTTP 400  {"detail": {"error_type": "max_tokens_exceeded"}}
-```
-**Consequence:** the client must treat 400 with `error_type ==
-"max_tokens_exceeded"` as a first-class, non-retryable, budget error — not a
-generic bad request.
+Docs list 401/422/429/529. The live API also returns
+`{"detail":{"error_type":"max_tokens_exceeded"}}`. Treated as a first-class,
+non-retryable budget error.
 
-### 4.6 Token ceiling ≈ 32.8k input tokens (bisected)
-Synthetic element tables, one Choice question, `jev-latest`:
+### 4.6 Input ceiling ≈ 32.8k tokens
+799 synthetic elements → 32,850 tokens (HTTP 200); 800 → 32,891 (HTTP 400).
+**UNVERIFIED as an exact boundary** — codex independently confirmed the error
+shape and a broadly compatible ceiling, not this exact edge.
 
-| elements | input tokens | result |
-|---|---|---|
-| 799 | 32,850 | HTTP 200 |
-| 800 | 32,891 | HTTP 400 `max_tokens_exceeded` |
-
-**Consequence:** client-side budget of **28,000 input tokens**, leaving >15%
-headroom. Over budget ⇒ rank-and-prune, never silently truncate.
-
-
-
-### 4.7 Latency (live, 1–2 word states, 10–400 elements)
+### 4.7 Latency — observations, not bounds
 189 ms @ 10 elements · 325 ms @ 50 · 270 ms @ 100 · 407 ms @ 200 · 397 ms @ 400.
-**Consequence:** a synchronous per-step loop is viable. No batching tricks needed.
+Single samples, no percentile discipline, no concurrency study. **These are not
+a timeout policy** and are not used as one.
 
-### 4.8 The macOS AX contract — compile- and runtime-verified on this machine
+### 4.8 macOS AX contract — compile- and runtime-verified
+Accessibility permission is granted on this machine, so these are
+runtime-verified. Swift 6.4, macOS 27.0.1, arm64.
 
-Accessibility permission is **already granted here**, so the findings below are
-runtime-verified, not just compiled. Swift 6.4, macOS 27.0.1, arm64.
+**Working API shape**
+- `AXUIElementCreateApplication(pid_t)`, `NSWorkspace.shared.frontmostApplication`
+  (`.activeApplication` deprecated).
+- All `kAX*` constants are **`String`** in Swift 6 — every call site needs
+  `as CFString`.
+- `AXError` is a Swift enum with **16** named cases (`AXError.h:32–79`). There
+  are **no `kAXError*` globals**, and `AXError` does **not** conform to `Error`,
+  so `Result<_, AXError>` does not compile.
+- `AXValueGetValue` writes through a **mutable** pointer: use
+  `withUnsafeMutableBytes(of: &value)` or pass `&value` directly.
+  `withUnsafeBytes(of:)` does **not** typecheck.
+- AX coordinates are top-left-origin screen space, not flipped Quartz.
+- AX calls work off the main thread.
+- `AXUIElementSetMessagingTimeout`: a **positive** value on the **system-wide**
+  element sets the process-wide timeout; `0` on system-wide *resets to default*.
+- `AXObserverCreate` requires the **target app's pid** — not your own, not
+  `0`/`-1` (those return `.illegalArgument`, −25201).
 
-**API shape that works:**
-- `AXUIElementCreateApplication(pid_t) -> AXUIElement`;
-  `NSWorkspace.shared.frontmostApplication` (`.activeApplication` is deprecated).
-- All `kAX*` constants are Swift **`String`** in Swift 6 — every call site needs
-  `as CFString`. 57 roles and 34 notification constants verified.
-- `AXError` is a **Swift enum, 17 cases**. There are **no `kAXError*` globals**,
-  and `AXError` does **not** conform to `Error` — so `Result<_, AXError>` does
-  not compile. Map it explicitly.
-- `AXValueGetValue` needs `withUnsafeBytes(of:)`; `UnsafeRawPointer(&var)` warns.
-  AX coordinates are top-left-origin screen space, **not** flipped Quartz.
-- AX calls work **off the main thread**.
-
-**Text entry — verified working.** Setting a value on a text field is:
-```swift
-AXUIElementSetAttributeValue(field, kAXValueAttribute as CFString, text as CFString)
-```
-Verified end-to-end on Safari's address bar
-(`WEB_BROWSER_ADDRESS_AND_SEARCH_FIELD`): set → `kAXErrorSuccess`, read-back
-matched, restore → `kAXErrorSuccess`. **No CGEvent synthesis is needed.** Note
-`kAXSelectedText` is *not* settable (`isSettable == false`), and `CFBoolean(v)`
-does not compile — use `kCFBooleanTrue` / `kCFBooleanFalse`.
-
-**Gotchas that will bite, all confirmed by compiler diagnostics:**
+**Gotchas confirmed by compiler diagnostics**
 - `String` does **not** bridge to a `CFString` parameter.
-- A `static let` holding a `CFString` is a Swift 6 concurrency error
-  (`CFString` is non-`Sendable`, `#MutableGlobalVariable`).
-- `kAXTrustedCheckOptionPrompt` is a **global `var`** → also non-`Sendable`.
-- `kAXFrameAttribute` **does not exist in the SDK** (apps advertise `"AXFrame"`
-  but return `kAXErrorAttributeUnsupported`). Use `kAXPositionAttribute` +
-  `kAXSizeAttribute`.
+- A `static let` holding a `CFString` is a Swift 6 concurrency error.
+- `kAXTrustedCheckOptionPrompt` is a non-`Sendable` global `var`.
+- `kAXFrameAttribute` does **not** exist; use `kAXPosition` + `kAXSize`.
 - `AXMakeProcessTrusted` is unavailable in Swift.
-- Do **not** use `CFArrayGetValueAtIndex` + `load(as:)` — it compiles with a
-  type error and **segfaults** (exit 139). Safe path: bridge `CFArray` → `NSArray`,
-  check `CFGetTypeID(obj) == AXUIElementGetTypeID()` (live value 77), then
-  `unsafeDowncast`.
-- `AXObserverCreate` must receive the **target app's pid** — not your own, and
-  not `0`/`-1`, which return `AXError.illegalArgument` (-25201). Confirmed
-  runtime: own pid → `AddNotification` fails -25201; target pid → succeeds.
+- `CFArrayGetValueAtIndex` + `load(as:)` **segfaults** (exit 139). Safe path:
+  bridge `CFArray` → `NSArray`, check `CFGetTypeID(obj) == AXUIElementGetTypeID()`
+  (live value 77), then `unsafeDowncast`.
+- ApplicationServices is **not** re-exported; every target naming `AXUIElement`
+  must import it.
 
-**Verified `Package.swift`** (builds clean, 6 tests pass, dumps a live iTerm2
-AX tree off the main thread):
+**Verified `Package.swift`** (builds clean, dumps a live AX tree off-main-thread):
+
 ```swift
 // swift-tools-version: 6.0
 import PackageDescription
@@ -171,291 +156,449 @@ let package = Package(
     ],
     targets: [
         .target(name: "AXKit", swiftSettings: [.swiftLanguageMode(.v6)],
-                linkerSettings: [.linkedFramework("ApplicationServices"), .linkedFramework("AppKit")]),
+                linkerSettings: [.linkedFramework("ApplicationServices"),
+                                 .linkedFramework("AppKit")]),
         .executableTarget(name: "jevscope", dependencies: ["AXKit"],
                 swiftSettings: [.swiftLanguageMode(.v6)],
-                linkerSettings: [.linkedFramework("ApplicationServices"), .linkedFramework("AppKit")]),
+                linkerSettings: [.linkedFramework("ApplicationServices"),
+                                 .linkedFramework("AppKit")]),
         .testTarget(name: "AXKitTests", dependencies: ["AXKit"],
                 swiftSettings: [.swiftLanguageMode(.v6)]),
     ]
 )
 ```
-The library does **not** re-export ApplicationServices; any target naming
-`AXUIElement` must import it itself.
+
+### 4.9 Action timeouts are not failures
+> "…they may not return within the timeout value… **This does not necessarily
+> mean that the function has failed**, however. If appropriate, your assistive
+> application can try to call this function again."
+> — `AXUIElement.h:317–320`
+
+Apple's suggested retry is unsafe for mutations: a retried press can execute
+twice. See §6.4.
 
 ---
 
-## 5. Architecture
+## 5. Decision contract — `jevscope decide v1` (versioned, complete)
 
-```
-                    ┌──────────────────────────────────────┐
-                    │  AXBackend (protocol)                │
-                    │  AXUIElementBackend | FixtureBackend  │
-                    └───────────────┬──────────────────────┘
-                                    │  [Snapshot] (pure value type)
-                    ┌───────────────▼──────────────────────┐
-                    │  ElementTable                         │
-                    │  flat, indexed, budgeted, serialised  │
-                    └───────────────┬──────────────────────┘
-                                    │  state: JSON string
-                    ┌───────────────▼──────────────────────┐
-                    │  JevClient (URLSession)              │
-                    │  → answers (typed, decoded, checked)  │
-                    └───────────────┬──────────────────────┘
-                                    │  [Decision]
-                    ┌───────────────▼──────────────────────┐
-                    │  Gate        — confidence semantics   │
-                    │  Resolver    — handle → live element  │
-                    │  Actuator    — role∩action check     │
-                    └───────────────┬──────────────────────┘
-                                    │  .act() | .refuse(reason)
-                    ┌───────────────▼──────────────────────┐
-                    │  Trace (JSONL, no secrets)           │
-                    └──────────────────────────────────────┘
+### 5.1 Request
+
+One `POST /v1/systemone`, `model: "jev-latest"`. Exactly four questions, asked
+together:
+
+```json
+{
+  "model": "jev-latest",
+  "state": { "application": "...", "frontWindow": "...", "elements": [...] },
+  "questions": {
+    "operation": { "type": "choice", "instructions": "...", "criteria": {...} },
+    "target":    { "type": "choice", "instructions": "...", "criteria": {...} },
+    "risk":      { "type": "score",  "instructions": "...", "criteria": [...] },
+    "applied":   { "type": "noul",   "instructions": "...", "criteria": {...} }
+  }
+}
 ```
 
-`JevCore` is pure: `AXBackend` is a protocol, so the whole decision path is
-testable against fixtures with no live API and no Accessibility permission.
+**Operation vocabulary** (`criteria` keys) — a closed set. No free text:
+`press` · `setValue` · `none`.
 
----
+**Target criteria** — one option per candidate handle, value
+`"<role> \"<name>\" <actions>"`, plus a mandatory `none` option. Cap **24**
+(§7). A `choice` answer whose `probabilities` keys do not exactly equal the
+criteria keys is a hard error (§8).
 
-## 6. Confidence semantics — verified against the live API
-
-This is the technical core of the project.
-
-### 6.1 Documented formulas
-From [docs.typesafe.ai/confidence](https://docs.typesafe.ai/confidence):
-- Choice: `(p_max − 1/n) / (1 − 1/n)`
-- Score: `max(0, 1 − Σ p_i·|i − m| / MAD_unif)`, `MAD_unif = (1/n)Σ|i − (n−1)/2|`,
-  where **`m` is the most likely level (`argmax` of the probabilities)** — *not*
-  the returned mean `score`
-- Noul: `|2p − 1|`, **derived client-side, not returned**
-
-### 6.2 What actually comes back (live, 32 samples)
-- **Choice**: formula **confirmed**, max abs error **0.005** (8 samples).
-- **Score**: formula **confirmed**, max abs error **0.020**, mean **0.008**
-  (24 samples) — consistent with two-decimal rounding. An earlier revision of
-  this spec wrongly reported the formula as unreproducible; that was an error in
-  the analysis (it fed the returned mean `score` in as `m`). Caught by the Codex
-  review, re-verified, and recorded in `evidence/score-confidence-findings.md`.
-- **Noul**: carries **no `confidence` field at all** — only `noul`. High `noul`
-  means **YES** (0 = no, 1 = yes), verified 6/6 including a negative-polarity
-  probe; see `evidence/noul-polarity.md`.
-
-### 6.3 What we implement
-Gate on the server's `confidence` for **Choice** and **Score** — both are now
-verified reproducible, so there is no reason to reimplement them.
-
-| Answer type | Gate on | Rule |
+**Questions**
+| Key | Type | Asks |
 |---|---|---|
-| Choice | server `confidence` (≡ `p_max` form) | act if `confidence ≥ threshold` |
-| Score | server `confidence` | act if `confidence ≥ threshold` |
-| Noul | the `noul` value, two-sided | `noul ≥ hiT` ⇒ **yes**; `noul ≤ loT` ⇒ **no**; otherwise **refuse** |
+| `operation` | choice | which single operation advances the goal, or `none` |
+| `target` | choice | which element the operation targets, or `none` |
+| `risk` | score | irreversibility of the selected operation, 3 levels `["reversible","hard to reverse","irreversible"]` |
+| `applied` | noul | "has the requested outcome already been reached?" |
 
-Noul is the only primitive needing our own threshold, because the API returns
-no confidence for it. Defaults: `loT = 0.20`, `hiT = 0.80`; destructive
-questions raise `hiT` to `0.95`, following the canonical worked example.
+All four share one `state`; screen text is **data**, and every instruction says
+so explicitly.
 
-> **Corrected defect.** An earlier draft read this gate as
-> `p ≤ loT ⇒ yes` / `p ≥ hiT ⇒ no`. That is **inverted**: it selected the
-> destructive branch exactly when the model was least confident the action was
-> destructive, inverting the safety mechanism. Found by the Codex review and
-> independently re-verified live.
+### 5.2 Answer validation (all must hold, else `invalidAnswer`)
+1. Every question key present; every answer's `type` matches its question.
+2. `probabilities` keys **exactly** equal the `criteria` keys.
+3. Every probability finite and in `[0,1]`; sum within **0.02** of 1.
+4. `choice` is a member of `probabilities`.
+5. `confidence` finite and in `[0,1]` (Choice, Score only).
+6. `noul` finite and in `[0,1]`.
+7. Any tie in `probabilities` is a **hard error**, never an arbitrary pick.
 
-Every threshold is **configurable and recorded in the trace**. Refusals emit the
-full probability distribution, following `paulsmith/computer-use-jev`.
+Errors **never** default to zero, the first option, a guessed handle, or success.
+
+### 5.3 Composition → Decision
+
+```
+no_action   if operation == "none"                    -> Decision(action: .none)
+no_action   if target    == "none"                    -> Decision(action: .none)
+refused     if operation confidence < 0.85            -> lowConfidence
+refused     if target    confidence < 0.85            -> lowConfidence
+refused     if target.handle is not a candidate in THIS snapshot
+                                                    -> unknownHandle
+refused     if risk score >= 2 (irreversible)         -> approvalRequired
+refused     if risk score == 1 and risk confidence < 0.90
+                                                    -> approvalRequired
+decision    otherwise, bound to (snapshotGeneration, appLaunchID,
+             handle, arguments, thresholds)
+```
+
+`operation` and `target` are **not** independent: after both gates pass, the
+pair is validated against the primitive table in §6.1. An invalid pair is
+`unsupportedAction`, never dispatched. When `operation` is `none` the `target`
+question is still asked (one round trip) and its answer is ignored.
+
+### 5.4 Thresholds
+
+Finite configuration required, with `0 ≤ loT < 0.5 < hiT ≤ 1`; boundaries are
+**inclusive**: `noul ≥ hiT` ⇒ yes, `noul ≤ loT` ⇒ no, otherwise `ambiguousNoul`.
+Defaults: `operationConfidence 0.85`, `targetConfidence 0.85`,
+`riskConfidence 0.90`, `noulLoT 0.20`, `noulHiT 0.80`.
+
+The `applied` Noul gates **completion**, not permission: `applied ≥ 0.80` ⇒
+`Decision(action: .alreadyDone)`, `applied ≤ 0.20` ⇒ proceed, else
+`ambiguousNoul`. Because raising `hiT` for a dangerous question does not tighten
+the permissive *no* branch, the destructive boundary is enforced by the `risk`
+**Score**, not by Noul thresholds.
+
+**Measured caution.** On three clearly benign real goals (`switch to list view`,
+`open the search field`, `show the bookmarks sidebar`), a risk Noul returned
+**0.40 / 0.39 / 0.71** — all inside a `[0.20, 0.80]` refusal band, refusing
+correct, high-confidence, harmless decisions. **A symmetric Noul band is not
+usable for risk.** This is why v1 gates risk with a `Score`, and why §9 measures
+refusal rates rather than assuming them.
+
+### 5.5 Untrusted screen text
+Window titles and labels are attacker-controlled. TypeSafe documents that models
+are susceptible to adversarial state
+([model-jaggedness](https://docs.typesafe.ai/model-jaggedness/jev-1.13)).
+Authorization is therefore **never** derived from screen text: §6.4 approval is
+a local token minted from the operator's own `--approve` flag.
 
 ---
 
-## 7. Element identity — the fail-closed contract
+## 6. Primitives, execution, and outcomes
 
-### 7.1 Strategy (chosen from three, with reasons)
-1. **`AXIdentifier`** — high precision, near-zero recall. Purely opt-in: AppKit's
-   Interface Builder Identity inspector exposes only Description and Help, and
-   SwiftUI only emits an identifier via `.accessibilityIdentifier`. Probing it
-   costs one IPC round-trip per node and usually returns `kAXErrorNoValue`.
-   **Opportunistic tie-breaker only. Never the primary key.**
-2. **Index path** (`/3/1/0`) — guaranteed present and unambiguous *within one
-   frozen snapshot*, but meaningless to a model, which will hallucinate a
-   plausible path. **Machine key only.**
-3. **Role + ordinal + label** — the only vocabulary a text-only model already
-   understands. **Model-facing handle.**
+### 6.1 Primitive table (v1 allowlist)
 
-Note from the live SDK: AppKit maps `accessibilityLabel` → **`AXDescription`**
-(not `AXTitle`).
-
-**Corrected name-resolution order:**
-**`AXDescription` → `AXTitle` → `AXHelp` → `AXIdentifier`** — identifier **last**.
-An earlier draft put `AXIdentifier` first. Measured against real trees, that
-yields AppKit's private placeholders (`_NS:61`, `_NS:8`, `_NS:23`) as the
-displayed name, which is useless to a text-only model and contradicts §7.1's own
-"tie-breaker only" intent. See `evidence/ax-element-table-format.txt`.
-Measured coverage on this machine (4 running apps, 3,574 nodes): **identifier
-66%, description 7%, title 46%, named-by-any-order 74%**
-(`evidence/ax-quality-macos27.txt`). Those are Apple apps; third-party coverage
-is **UNVERIFIED** and the eval harness exists to measure it.
-
-### 7.2 Serialised element line
-Flat, numbered, one element per line — a numbered list beats a nested tree for
-a text-only model and keeps the handle adjacent to the human name.
-
-```
-[07] AXButton "Archive" | enabled | 512,180,72x24 | press | /3/1/0
-```
-
-`enabled` is **tri-state**: `enabled`, `disabled`, or `-` when the attribute is
-absent. An earlier draft rendered absent as `disabled`, which mislabelled every
-`AXWindow` (they do not report `kAXEnabledAttribute`) as disabled. `nil` means
-not applicable, never disabled.
-
-### 7.3 Resolution, re-verification, refusal
-1. Jev returns a handle. Look it up in **this snapshot's** map — the only
-   authoritative path.
-2. **Re-verify by full fingerprint**, not just role+enabled. An index path can
-   silently point at a *different same-role control* after the UI changes, so
-   role alone is insufficient. Compare `role`, `subrole`, `identifier`, `title`
-   and `description` against the snapshot. Measured drift across 190 re-read
-   comparisons on static Finder/Safari trees: **0% on all fields**
-   (`evidence/ax-fingerprint-stability.txt`), so this is a sound identity guard.
-   *UNVERIFIED:* that it actually fires when a control is genuinely swapped —
-   that test requires mutating a real UI, which v1 does not do.
-3. Check the action is actually offered, via `AXUIElementCopyActionNames` — not
-   a hardcoded role table.
-4. Perform **at most once**. Never retry a perform.
-
-**Refuse, deterministically, when any of these hold:**
-
-| Code | Condition |
-|---|---|
-| `unknownHandle` | handle not in this snapshot's map |
-| `staleSnapshot` | snapshot bound to a different app/launch instance |
-| `disabled` | element reports `enabled == false` |
-| `fingerprintChanged` | any identity field differs from the snapshot |
-| `ambiguousName` | name fallback matched 0 or >1 elements |
-| `unsupportedAction` | role does not offer the requested action |
-| `lowConfidence` | Choice/Score confidence below threshold |
-| `ambiguousNoul` | noul value inside the refusal band |
-| `readError` | an AX **read** returned non-success ⇒ no action taken |
-
-**`unknownOutcome` — a distinct terminal state, not a refusal.**
-Apple's own header (`AXUIElement.h:317-320`) states that
-`AXUIElementPerformAction` may return `kAXErrorCannotComplete` and that
-*"This does not necessarily mean that the function has failed."* Apple even
-suggests retrying — which on a destructive control means **double execution**.
-So an action timeout is neither a proven success nor a proven failure:
-
-- performs are attempted **once**, never retried;
-- `kAXErrorCannotComplete` on a perform ⇒ `unknownOutcome`;
-- `unknownOutcome` requires human adjudication and is reported distinctly, so
-  it is never conflated with "we chose not to act".
-
-See `evidence/ax-perform-timeout-semantics.md`.
-
-**Invariant A:** exactly one handle resolves to at most one element, or the run
-refuses. There is no "best-guess" path.
-
-### 7.4 Candidate ranking (measured, not aspirational)
-Raw trees are far too large to act on: **510–784 nodes**, of which 346–519 are
-named *and* actionable. Two stages, both measured:
-
-**Hard filter — keep only:** named (≥3 chars) · has ≥1 action · `enabled == true`
-· frame non-empty and intersecting the screen · **not** an AppKit-internal
-placeholder (identifier matching `_NS:<n>` *and* no description/title).
-
-**Score, then keep top K** (default **K = 24**, configurable):
-`4·enabled + 2·offersPress + 1·name≥3chars + 0.5·area>800px² + 3·goalTermMatch`,
-ties broken by name for determinism. `goalTerms` = lowercased goal tokens,
-split on non-alphanumerics.
-
-Measured (`evidence/ax-candidate-ranking.txt`):
-
-| app | nodes | after hard filter | top-24 tokens |
+| Primitive | Mechanism | Precondition | Argument |
 |---|---|---|---|
-| Finder | 510 | **39** | 485 |
-| Safari | 784 | **59** | 421 |
-| TextEdit | 470 | **9** | 163 |
+| `press` | `AXUIElementPerformAction(el, kAXPressAction)` | `"AXPress"` ∈ `AXUIElementCopyActionNames(el)` | none |
+| `setValue` | `AXUIElementSetAttributeValue(el, kAXValueAttribute, text)` | `AXUIElementIsAttributeSettable(el, kAXValueAttribute)` is true | text from the **goal string**, never from screen content |
 
-The filter removes ~92%, and goal-term matching puts the right control first
-(`search` → `Search[AXButton]`; `delete` → `Delete[AXButton]`). **A top-24 table
-costs 163–485 tokens — the 28k budget in §4.6 is never the binding constraint.**
-Ranking governs *accuracy*, not tokens.
+Explicitly **not** in v1: `submit`, `send`, `delete`, `press` on any menu item
+whose label matches a destructive regex, coordinate clicks, CGEvent synthesis,
+and any action inferred from the action-name list.
+
+`setValue` **replaces** the entire field value. It does not append, insert, or
+submit. Verified on Safari's address bar (set → success, read-back matched,
+restore → success); arbitrary text-control support is otherwise **UNVERIFIED**.
+
+### 6.2 Approval
+
+`jevscope decide` emits a decision containing an **approval token**: a
+`SHA256` over `snapshotGeneration ‖ appLaunchID ‖ primitive ‖ handle ‖
+arguments ‖ thresholds ‖ questionVersion`. `apply` requires that token via
+`--approve <token>` and refuses if any component differs.
+
+A token is **single-use**: applying consumes it. Re-running `decide` after any
+mutation mints a different `snapshotGeneration` and therefore a different
+token, so a stale approval cannot be silently reused.
+
+### 6.3 Preconditions re-verified at apply time
+1. Same app, same launch (`appLaunchID`), non-`nil` retained backend reference.
+2. Snapshot generation matches the decision.
+3. `AXUIElementCopyActionNames` still contains the required action (or the
+   attribute is still settable).
+4. Element still reports `enabled != false`.
+5. **Same-role substitution is explicitly out of scope of detection** and is
+   disclosed (§6.5).
+
+### 6.4 Outcome is tri-state
+
+| Outcome | Meaning | Retry |
+|---|---|---|
+| `refused(code)` | **Nothing was dispatched** | n/a |
+| `applied` | Dispatched and confirmed by a subsequent successful AX read | never |
+| `unknownOutcome` | Dispatched; AX returned `.cannotComplete` or the connection failed | **never** — report for human adjudication |
+
+A dispatched mutation is **never** automatically retried. HTTP retries to the
+Jev API are a separate concern from actuator retries.
+
+### 6.5 The residual race — disclosed, not solved
+There is an unavoidable interval between the last precondition check and the
+target app processing the request. AX exposes no transaction that combines
+snapshot verification with the action. Same-role label-preserving replacement,
+virtualized row reuse, and a selection change under an unchanged toolbar
+control are **not detectable** by any AX read available to us.
+
+Consequences: v1 ships a **narrow allowlist**, no submit/delete primitives, a
+single-use token bound to exact arguments, and an operator who must supply
+`--approve`. This is why v1 does **not** offer a generic unattended `act`.
 
 ---
 
-## 8. Module surface
+## 7. Candidate selection and budget
 
-| Module | Responsibility | Depends on |
+### 7.1 Eligibility (hard filter)
+Keep an element only if **all** hold:
+- name resolves non-empty via **`AXDescription` → `AXTitle` → `AXHelp` →
+  `AXIdentifier`** (identifier **last**: it is often AppKit's private `_NS:<n>`,
+  which is useless to the model — `evidence/ax-element-table-format.txt`);
+- name length ≥ 3 and does not start with `.` or `AX`;
+- ≥ 1 named action;
+- `enabled == true` (absent is **not** coerced to true — such elements are
+  dropped and counted);
+- frame is non-empty, non-zero, and intersects the union of `NSScreen.visibleFrame`;
+- not AppKit-synthetic (identifier matching `_NS:<n>` **and** no description/title).
+
+### 7.2 Ranking
+```
+score = 4·enabled + 2·offersPress + 1·(name.count >= 3)
+      + 0.5·(frameArea > 800) + 3·(name contains any goal term)
+```
+`goalTerms` = lowercased goal tokens split on non-alphanumerics, length ≥ 2,
+stopwords removed. **Ties break on `(name, path)` ascending** so ordering is
+deterministic and stable across runs and across K sweeps.
+
+Keep top **K = 24** (configurable). Handles are `e00…e23`, **assigned after
+ranking** and stable for a given snapshot generation — pruning never renumbers a
+handle that was already emitted.
+
+Measured (`evidence/ax-candidate-ranking.txt`): Finder 510 → 39 eligible;
+Safari 784 → 59; TextEdit 470 → 9.
+
+### 7.3 Budget — bytes, not guessed tokens
+There is no official tokenizer. Rather than the v1 `chars/3.5` estimate (which
+codex correctly rejected as unverified), jevscope budgets on **UTF-8 bytes of
+the fully serialized request**, at **1 token ≤ 1 byte** — conservative, since
+measured 800 elements ≈ 32,800 bytes ≈ 32,891 tokens.
+
+Budget: **28,000 bytes**, covering `goal`, all four `instructions`, all `criteria`
+(with the full candidate table duplicated into `target`), the element table, and
+model framing.
+
+Overflow order, deterministic:
+1. drop the `value` field from each element line;
+2. drop `frame`;
+3. drop `actions` for the lowest-ranked candidates;
+4. reduce K by halving (24 → 12 → 6 → 3 → 1);
+5. still over ⇒ **fail closed** with `budgetExhausted`. Never silently truncate.
+
+Re-check the final serialized request before sending. On HTTP 400
+`max_tokens_exceeded`, retry **once** at K/2, then fail closed.
+
+### 7.4 Escaping and the line grammar
+Labels may contain quotes, newlines, pipes, or text resembling a numbered row.
+Escape as: `\` → `\\`, `"` → `\"`, newline → `\n`, CR → `\r`, `|` → `\|`.
+Any residual control character is replaced with `?`. After escaping, a line
+matching `^\[\d{2,}\]` inside a label is prefixed with a space.
+
+---
+
+## 8. Backend contract and error handling
+
+### 8.1 Backend protocol (normalized — no raw `AXUIElement` escapes)
+```swift
+protocol AXBackend {
+    func launchID(app: String) throws -> String
+    func snapshot(generation: Int, budget: ByteBudget) throws -> Snapshot
+    func supports(_ primitive: Primitive, on handle: Handle) throws -> Bool
+    func verify(_ binding: Binding) throws -> VerifyResult
+    func dispatch(_ binding: Binding) throws -> DispatchResult
+}
+```
+`AXUIElement` ownership, Swift 6 isolation and `AXError` conversion stay inside
+the production adapter. **Fixture tests never touch real AX.**
+
+### 8.2 Phase-specific error table
+
+| Phase | Condition | Result |
 |---|---|---|
-| `AXTypes` | `Snapshot`, `Element`, `RefusalCode`, `AXBackend` protocol | Foundation |
-| `ElementTable` | walk → index → budget → serialise | AXTypes |
-| `JevClient` | request/response codable types, retry, budget guard | Foundation |
-| `Gate` | confidence semantics (§6.3) | — |
-| `Resolver` | handle → live element, refusal taxonomy | AXTypes |
-| `Actuator` | role∩action check, perform | AXTypes |
-| `Trace` | JSONL writer, secret-free | Foundation |
-| `jevscope` (exe) | CLI | all |
+| attribute | optional attribute absent (`AXIdentifier`, `AXHelp`) | field is `nil`, continue |
+| attribute | essential attribute malformed (wrong CF type) | skip element, count `malformed` |
+| attribute | `enabled` absent | element is **dropped**, counted `enabledUnknown` — never coerced to true |
+| traversal | child enumeration fails for a subtree | mark snapshot **partial**, continue; record `truncated` |
+| traversal | depth > 40, node cap, or a repeated element | stop that branch, count `cycleGuard` / `limit` |
+| preflight | app not running, AX not trusted, empty root | `refused(.axUnavailable)` |
+| preflight | snapshot **partial** *and* fewer than 3 eligible candidates | `refused(.incompleteSnapshot)` |
+| dispatch | precondition fails | `refused(.fingerprintChanged)` |
+| dispatch | `.cannotComplete` or transport failure | **`unknownOutcome`**, never `refused` |
 
-## 9. CLI
+A snapshot is `complete` or `partial`; the flag is recorded in every trace and
+in every corpus case.
+
+### 8.3 Refusal precedence
+When several conditions hold, the **first** match in this order is reported:
+`budgetExhausted` → `axUnavailable` → `incompleteSnapshot` → `invalidAnswer` →
+`lowConfidence` → `unknownHandle` → `unsupportedAction` → `ambiguousNoul` →
+`approvalRequired` → `staleApproval` → `fingerprintChanged` → `ambiguousName`.
+
+### 8.4 Fake backend contract
+`ScriptedBackend` replays a transition list and records an **action log**.
+Required scripted cases: same-role replacement; row reuse; selection change under
+an unchanged control; app restart; out-of-order response; low-confidence
+fixture; `cannotComplete` after a recorded mutation.
+
+**Every refusal test asserts the action log is empty. Every unknown-outcome test
+asserts exactly one recorded dispatch.**
+
+---
+
+## 9. Evaluation
+
+### 9.1 Two separate modes
+- **`jevscope replay <corpus>`** — fully offline and **deterministic**: recorded
+  Jev responses + a fake backend. Asserts **identical normalized decisions and
+  refusal codes** across runs. No network.
+- **`jevscope eval-live <corpus>`** — calls the live API. Reports metrics and
+  **asserts nothing about run-to-run equality**. Latency and timestamps vary;
+  `jev-latest` moves.
+
+### 9.2 Pinned for live runs
+`model` id resolved at run start (recorded), question version, serialisation
+version, ranking version, thresholds, corpus hash, candidate ordering,
+`--repeats` (default 3) with median and min/max reported.
+
+### 9.3 Case schema
+```json
+{ "id":"finder-list-view",
+  "app":"com.apple.finder", "snapshot":"finder-recents-v1.json",
+  "goal":"switch to list view",
+  "expect": { "operation":"press", "target_name":"list view" },
+  "expectRefusal": null,
+  "acceptableTargets": [] }
+```
+
+### 9.4 Metrics — explicit denominators
+| Metric | Definition |
+|---|---|
+| `operationAccuracy` | correct `operation` ÷ **all cases** |
+| `targetAccuracy` | correct target name ÷ cases where `operation` was correct |
+| `exactAccuracy` | operation **and** target correct ÷ all cases |
+| `refusalPrecision` | correct refusals ÷ cases whose oracle is a refusal |
+| `falseActRate` | acted-when-oracle-said-refuse ÷ **cases the system acted on** |
+| `targetPrunedRate` | correct target absent from candidates ÷ all cases |
+| `coverage` | acted ÷ all cases (so a refusal-only system cannot "win") |
+
+`refusalPrecision` over zero refusals is reported as `null`, never 1.0.
+`acceptableTargets` is non-empty ⇒ a match on any listed name counts.
+`targetPruned` is scored separately, never as a silent pass.
+
+### 9.5 Acceptance matrix
+Replay must reproduce, for every corpus case, the recorded normalized decision
+or refusal. All §8.4 scripted cases must pass. Refusal tests assert zero
+dispatches; unknown-outcome tests assert exactly one. The stochastic
+"low-confidence" smoke test is **replaced** by an injected fixture.
+
+---
+
+## 10. Artifacts, privacy, and secrets
+
+### 10.1 Two classes
+| Class | Location | Version control | Contents |
+|---|---|---|---|
+| **Raw capture** | `~/.local/share/jevscope/` | **never** | full AX tree incl. text-field values |
+| **Sanitized corpus** | `corpus/v1/*.json` | **yes** | element tables with names/values replaced by stable placeholders (`<LABEL_07>`), frame jittered, app + goal retained |
+
+Only the sanitized form is published. `CONTRIBUTING.md` is updated to match —
+v1 contradicted itself here.
+
+### 10.2 Runtime files
+Traces: `~/.local/share/jevscope/traces/`. Results: `results/results.json` in
+the repo, written **only** by `eval-live` via an explicit `--write-results`.
+v1's "no writes outside Application Support" is scoped to runtime state only.
+
+### 10.3 Trace contents and redaction
+Traces record: timestamps, resolved model, question version, thresholds, the
+**decision and refusal code**, the action log, usage counts, and a **SHA256 of
+the request body** — not the body. The API key is never written. Headers are
+never written. Screen text is not written to traces; the sanitized corpus is the
+only artifact containing element text, and it is placeholder-substituted.
+
+### 10.4 Non-disclosing secret check
+The v1 `git grep "$(cat .env)"` is unsafe — it expands secrets into argv and
+prints matches. Replaced by a check that compares **SHA256 digests** and prints
+only file paths and a count:
+```
+python3 scripts/check-secrets.py   # prints "0 files contain the API key"
+```
+It never prints the secret and never passes it on a command line.
+
+### 10.5 Two authorities, not one
+Holding the TypeSafe API key does **not** grant macOS Accessibility permission;
+they are separate. `SECURITY.md` is corrected to keep them distinct.
+
+---
+
+## 11. Module surface
+
+Single production library target `AXKit` (matching the verified `Package.swift`),
+plus the `jevscope` executable and `AXKitTests`. The v1 `JevCore` name is
+dropped — it never existed.
+
+| Module | Responsibility |
+|---|---|
+| `AXTypes` | `Snapshot`, `Element`, `Handle`, `RefusalCode`, `Outcome`, `AXBackend` |
+| `AXAdapter` | the only code touching `AXUIElement`; CF conversion; `AXError` mapping |
+| `FixtureBackend` | `ScriptedBackend` + action log |
+| `ElementTable` | eligibility, ranking, escaping, budget, serialisation |
+| `JevClient` | codable request/response, retries, budget guard, validation |
+| `Gate` | §5 composition and thresholds |
+| `Resolver` | handle → binding, preconditions, §6.3 |
+| `Actuator` | primitive allowlist, dispatch, tri-state outcome |
+| `Trace` | JSONL writer, redaction per §10.3 |
+| `jevscope` | CLI |
+
+## 12. CLI
 
 ```
-jevscope doctor                      # AX trust + Jev reachability, no key echoed
-jevscope tree [--app <bundleID>]     # snapshot → element table → stdout
-jevscope decide --goal "<text>"      # snapshot + goal → decision or refusal (no action)
-jevscope act --goal "<text>"        # decide, then act, fail-closed
-jevscope eval [--corpus <dir>]       # run the harness, write results.json
+jevscope doctor                       # AX trust + Jev reachability; never echoes the key
+jevscope tree --app com.apple.finder  # snapshot → element table
+jevscope decide --app … --goal "…"    # Decision + approval token; no side effects
+jevscope apply --approve <token>      # allowlisted primitive only
+jevscope replay --corpus corpus/v1    # deterministic, offline
+jevscope eval-live --corpus corpus/v1 # measured, pinned
 ```
 
-`decide` and `act` are separate so the eval harness can measure decisions
-without touching the desktop. **`--dry-run` is the default; acting requires an
-explicit flag or a resolved `approval_required` refusal.**
+`decide` never dispatches. `apply` is the only dispatching command and requires
+`--approve`. Bundle identifiers are used throughout; no name lookup, so no
+ambiguity.
 
-## 10. Eval harness (the differentiator)
-
-- **Corpus:** versioned real AX snapshots (JSON), captured from a fixed script
-  of apps, committed under `corpus/v1/`. Each case: goal, expected operation,
-  expected target handle, expected refusal code where applicable.
-- **Runner:** sweeps candidate counts (≈4 / 12 / 24, following the Cua recipe's
-  measured operating point) and reports decision accuracy, refusal precision,
-  false-act rate, and p50/p95 latency.
-- **Output:** `results/results.json` — committed, with the resolved model
-  version, date, and corpus hash. A regression is a diff a third party can read.
-- **Fixtures never hit the network.** `FixtureBackend` + a stub client make
-  `swift test` hermetic and offline.
-
-## 11. Verification plan
+## 13. Verification plan
 
 | # | Gate | Command |
 |---|---|---|
 | 1 | Builds clean | `swift build` |
-| 2 | Unit tests pass, hermetic | `swift test` |
-| 3 | Real AX tree, real app | `jevscope tree --app Finder \| head -40` |
-| 4 | Live Jev round-trip | `jevscope doctor` |
-| 5 | Refusal provably fires | act on a low-confidence goal; expect a `Refusal`, no AX action |
-| 6 | Corpus reproducible | `jevscope eval` twice → identical results |
-| 7 | No secret leakage | `git grep -I $(cut -d= -f2 .env)` → empty |
-| 8 | Codex validation | independent review dispatch |
+| 2 | Offline tests pass, no network, no AX | `swift test` |
+| 3 | Real AX tree from a real app | `.build/debug/jevscope tree --app com.apple.Safari` |
+| 4 | Live Jev round-trip | `.build/debug/jevscope doctor` |
+| 5 | Refusal provably fires | fixture; assert action log empty |
+| 6 | Unknown-outcome provably fires | fixture; assert exactly one dispatch |
+| 7 | Replay is deterministic | run twice, diff normalized output |
+| 8 | No secret leakage | `python3 scripts/check-secrets.py` |
+| 9 | Codex validation | independent review dispatch |
 
-## 12. Non-goals for v1
-
-Autonomous multi-step loops · screenshots / OCR / any pixel path · clicking by
-screen coordinates · agent memory · a GUI · background agents · writing files
-outside `Application Support`.
-
-## 13. Risks
+## 14. Risks
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| Concept not novel | **High** | §2/§3 positioning; own the harness, not the idea |
-| Raw AX tree is poor input — only ~33% of macOS apps offer full a11y support, and name/description/value are frequently missing ([Screen2AX, arXiv:2507.16704](https://arxiv.org/abs/2507.16704)) | **High** | measure it in the harness; that measurement *is* the deliverable |
-| Vision-first camp claims to beat the text baseline on grounding ([OmniParser, arXiv:2408.00203](https://arxiv.org/abs/2408.00203)) | Medium | publish the numbers either way; add a local-vision arm in v2 if text loses |
-| AX calls hang (`kAXErrorCannotComplete`) | Medium | `AXUIElementSetMessagingTimeout` at startup; treat as skip-element |
-| Elements change between snapshot and act | Medium | §7.3 re-verification; the refusal taxonomy |
-| Token ceiling | Low | §4.6 budget + rank-and-prune |
-| AGPL contamination from prior art | Low | clean-room; MIT only; no code copied |
+| Residual TOCTOU race is unclosable | **High** | §6.5 discloses it; narrow allowlist; no unattended act; single-use tokens |
+| Concept not novel | **High** | §2; own the harness and the honesty |
+| Raw AX tree is poor input — ~33% of macOS apps offer full a11y support, and name/description/value are frequently missing ([Screen2AX, arXiv:2507.16704](https://arxiv.org/abs/2507.16704)) | **High** | measure it in §9; that measurement is the deliverable |
+| Vision-first camp claims to beat the text baseline on grounding ([OmniParser, arXiv:2408.00203](https://arxiv.org/abs/2408.00203)) | Medium | publish numbers either way |
+| Noul gates refuse benign actions (measured 0.39–0.71 on harmless goals) | Medium | §5.4; risk gated by `Score`, not Noul |
+| AX calls hang (`kAXErrorCannotComplete`) | Medium | messaging timeout at startup; §8.2 phase table |
+| `jev-latest` moves under `eval-live` | Medium | §9.2 pins and records the resolved id; replay is separate |
+| AGPL contamination from prior art | Low | clean-room; MIT only; nothing vendored |
 
-## 14. Licence and provenance
+## 15. Licence and provenance
 
-MIT. **No code copied from any prior project** — the Jev request shape was
-ported from the operator's own private `paper-traiding-mk4-executor`
-(Python), and the Swift client is written from the canonical TypeSafe HTTP
-contract. Prior-art projects are cited, not vendored.
+MIT. **No code copied from any prior project.** The Jev request shape derives
+from canonical TypeSafe HTTP docs and from the operator's own private
+`paper-traiding-mk4-executor` (Python). Prior-art projects are cited, not
+vendored. The Swift AX client was written against the live macOS 27 SDK, with
+every API confirmed by a successful compile or a runtime read recorded under
+`evidence/`.
