@@ -1,0 +1,35 @@
+# SPEC.md §7.2 element table from REAL trees — measured 2026-10-02, macOS 27.0.1
+# Read-only, no UI mutation. User filenames redacted: this repo is PUBLIC.
+#
+# FINDINGS
+# 1. AXIdentifier on Apple apps is often an internal '_NS:<n>' string, NOT a human label.
+#    Resolving AXIdentifier FIRST yields names like "_NS:61" that are useless to a
+#    text-only model — and contradicts SPEC §7.1's own 'tie-breaker only' intent.
+# 2. AXWindow does not report kAXEnabledAttribute, so 'enabled' renders as 'disabled'
+#    for windows. nil (not applicable) must not be shown as disabled.
+# 3. Candidate volume far exceeds the 24-cap: 346 of 510 Finder nodes and 519 of 784
+#    Safari nodes are named+actionable. Ranking/pruning is mandatory, not optional.
+# 4. Budget: 510-node tree ~14.5k tokens, 784-node tree ~24.6k tokens. A 28k budget is
+#    workable but Safari already sits at ~88% of it.
+
+## Finder (510 nodes) — first candidate rows
+// SPEC.md §7.2 element table — real com.apple.finder tree, 510 nodes
+[01] AXWindow "FinderWindow" | disabled | 500,184,920x436 | actions: AXRaise | /0
+[03] AXScrollArea "_NS:61" | disabled | 500,236,148x384 | actions: AXScrollLeftByPage,AXScrollRightByPage,AXScrollUpByPage,AXScrollDownByPage | /0/0/0
+[04] AXOutline "_NS:8" | enabled | 499,235,150x716 | actions: AXShowMenu | /0/0/0/0
+[99] AXScrollArea "_NS:23" | disabled | 648,236,772x384 | actions: AXScrollLeftByPage,AXScrollRightByPage,AXScrollUpByPage,AXScrollDownByPage | /0/0/2/0
+[100] AXList "IconView" | enabled | 648,236,772x2488 | actions: AXShowMenu | /0/0/2/0/0
+[103] AXImage "<USER_FILENAME>" | enabled | 689,260,64x64 | actions: AXOpen,AXShowMenu | /0/0/2/0/0/0/0/0
+[105] AXImage "<USER_FILENAME>" | enabled | 814,260,64x64 | actions: AXOpen,AXShowMenu | /0/0/2/0/0/0/1/0
+[107] AXImage "<USER_FILENAME>" | enabled | 939,260,64x64 | actions: AXOpen,AXShowMenu | /0/0/2/0/0/0/2/0
+[109] AXImage "<USER_FILENAME>" | enabled | 1064,260,64x64 | actions: AXOpen,AXShowMenu | /0/0/2/0/0/0/3/0
+
+## summary rows
+
+// full 511-node table ≈ 14504 tokens
+// candidate rows available: 346 of 511 nodes (67% actionable+named)
+
+## Safari (784 nodes)
+
+// full 784-node table ≈ 24587 tokens
+// candidate rows available: 519 of 784 nodes (66% actionable+named)

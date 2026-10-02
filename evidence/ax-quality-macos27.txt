@@ -1,0 +1,15 @@
+app	bundleID	pid	nodes	named%	ident%	desc%	title%	enabled%	actionable%	press%
+# name resolution order: AXIdentifier -> AXDescription -> AXTitle -> AXHelp
+Finder	com.apple.finder	959	510	77	66	14	54	49	83	66
+System Settings	com.apple.systempreferences	-	NOT RUNNING
+Safari	com.apple.Safari	918	784	68	59	5	57	63	95	70
+Terminal	com.apple.Terminal	-	NOT RUNNING
+Notes	com.apple.Notes	947	1810	77	74	4	17	64	51	22
+Mail	com.apple.mail	-	NOT RUNNING
+Calendar	com.apple.iCal	-	NOT RUNNING
+TextEdit	com.apple.TextEdit	71364	470	75	67	5	57	48	87	69
+Preview	com.apple.Preview	-	NOT RUNNING
+Music	com.apple.Music	-	NOT RUNNING
+
+# MEAN across 4 running apps:
+# nodes=893  named%=74  identifier%=66  description%=7  title%=46  pressable%=56

@@ -1,0 +1,35 @@
+# Fingerprint stability (TOCTOU guard candidate) — measured 2026-10-02, macOS 27.0.1
+# Read-only. Static UI; no mutation performed.
+
+collected 17 AXButton elements from com.apple.finder
+elements: role	subrole	identifier	title	description	value	frame	enabled
+
+# drift over 5 re-reads of 17 elements (85 comparisons)
+#   role         drifted 0%
+#   subrole      drifted 0%
+#   identifier   drifted 0%
+#   title        drifted 0%
+#   description  drifted 0%
+#   value        drifted 0%
+#   frame        drifted 0%
+#   enabled      drifted 0%
+
+STABLE fields (0% drift): role, subrole, identifier, title, description
+VOLATILE fields: 
+
+--- Safari ---
+collected 21 AXButton elements from com.apple.Safari
+elements: role	subrole	identifier	title	description	value	frame	enabled
+
+# drift over 5 re-reads of 21 elements (105 comparisons)
+#   role         drifted 0%
+#   subrole      drifted 0%
+#   identifier   drifted 0%
+#   title        drifted 0%
+#   description  drifted 0%
+#   value        drifted 0%
+#   frame        drifted 0%
+#   enabled      drifted 0%
+
+STABLE fields (0% drift): role, subrole, identifier, title, description
+VOLATILE fields: 

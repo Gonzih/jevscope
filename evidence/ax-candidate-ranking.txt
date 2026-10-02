@@ -1,0 +1,39 @@
+# Candidate ranking — measured on real AX trees, 2026-10-02, macOS 27.0.1
+# Read-only; no UI mutation.
+
+=== com.apple.finder — 511 nodes
+  actionable            428
+  named (>=3 chars)     395
+  AppKit-internal only  43
+  CANDIDATES after hard filter  39
+  goal 'archive': top5 = Action[AXMenuButton], Group[AXMenuButton], Apple[AXMenuBarItem], Edit[AXMenuBarItem], File[AXMenuBarItem]
+     top-24 token cost ≈ 485 tokens
+  goal 'delete': top5 = Action[AXMenuButton], Group[AXMenuButton], Apple[AXMenuBarItem], Edit[AXMenuBarItem], File[AXMenuBarItem]
+     top-24 token cost ≈ 485 tokens
+  goal 'search': top5 = Search[AXButton], Action[AXMenuButton], Group[AXMenuButton], Apple[AXMenuBarItem], Edit[AXMenuBarItem]
+     top-24 token cost ≈ 485 tokens
+
+=== com.apple.Safari — 785 nodes
+  actionable            751
+  named (>=3 chars)     539
+  AppKit-internal only  42
+  CANDIDATES after hard filter  59
+  goal 'archive': top5 = Actions[AXCell], Actions[AXCell], Actions[AXCell], Analytics[AXLink], App Store Connect[AXGroup]
+     top-24 token cost ≈ 421 tokens
+  goal 'delete': top5 = Delete[AXButton], Delete[AXButton], Actions[AXCell], Actions[AXCell], Actions[AXCell]
+     top-24 token cost ≈ 418 tokens
+  goal 'search': top5 = smart search field[AXTextField], Actions[AXCell], Actions[AXCell], Actions[AXCell], Analytics[AXLink]
+     top-24 token cost ≈ 424 tokens
+
+=== com.apple.TextEdit — 470 nodes
+  actionable            410
+  named (>=3 chars)     357
+  AppKit-internal only  53
+  CANDIDATES after hard filter  9
+  goal 'archive': top5 = Three-by-one square grid below a one-by-two line grid[AXMenuButton], Where:[AXPopUpButton], column view[AXMenuButton], Cancel[AXButton], New Document[AXButton]
+     top-24 token cost ≈ 163 tokens
+  goal 'delete': top5 = Three-by-one square grid below a one-by-two line grid[AXMenuButton], Where:[AXPopUpButton], column view[AXMenuButton], Cancel[AXButton], New Document[AXButton]
+     top-24 token cost ≈ 163 tokens
+  goal 'search': top5 = search[AXButton], Search[AXTextField], Three-by-one square grid below a one-by-two line grid[AXMenuButton], Where:[AXPopUpButton], column view[AXMenuButton]
+     top-24 token cost ≈ 163 tokens
+

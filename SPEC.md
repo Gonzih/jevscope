@@ -219,33 +219,48 @@ testable against fixtures with no live API and no Accessibility permission.
 
 ---
 
-## 6. Confidence semantics — verified, and different from the docs
+## 6. Confidence semantics — verified against the live API
 
 This is the technical core of the project.
 
 ### 6.1 Documented formulas
 From [docs.typesafe.ai/confidence](https://docs.typesafe.ai/confidence):
 - Choice: `(p_max − 1/n) / (1 − 1/n)`
-- Score: `max(0, 1 − Σ p_i·|i − m| / MAD_unif)`, `MAD_unif = (1/n)Σ|i − (n−1)/2|`
+- Score: `max(0, 1 − Σ p_i·|i − m| / MAD_unif)`, `MAD_unif = (1/n)Σ|i − (n−1)/2|`,
+  where **`m` is the most likely level (`argmax` of the probabilities)** — *not*
+  the returned mean `score`
 - Noul: `|2p − 1|`, **derived client-side, not returned**
 
-### 6.2 What actually comes back (live, 8 samples)
-- **Choice**: formula **confirmed**, max absolute error **0.005** (rounding).
-- **Score**: formula **NOT reproduced**, max error **0.29**. Six candidate
-  formulas were fitted against 8 samples (`1−H/ln n`, choice-form, `pmax−p₂`,
-  documented MAD, `p[rounded level]`, unnormalised MAD) — none fit. Observed
-  values floor at `0.00` even when the top level holds 0.54 probability, and the
-  field is systematically *below* the choice-style formula.
-- **Noul**: carries **no `confidence` field at all** — only `noul`.
+### 6.2 What actually comes back (live, 32 samples)
+- **Choice**: formula **confirmed**, max abs error **0.005** (8 samples).
+- **Score**: formula **confirmed**, max abs error **0.020**, mean **0.008**
+  (24 samples) — consistent with two-decimal rounding. An earlier revision of
+  this spec wrongly reported the formula as unreproducible; that was an error in
+  the analysis (it fed the returned mean `score` in as `m`). Caught by the Codex
+  review, re-verified, and recorded in `evidence/score-confidence-findings.md`.
+- **Noul**: carries **no `confidence` field at all** — only `noul`. High `noul`
+  means **YES** (0 = no, 1 = yes), verified 6/6 including a negative-polarity
+  probe; see `evidence/noul-polarity.md`.
 
 ### 6.3 What we implement
-We do not trust the server's `score.confidence` for gating.
+Gate on the server's `confidence` for **Choice** and **Score** — both are now
+verified reproducible, so there is no reason to reimplement them.
 
 | Answer type | Gate on | Rule |
 |---|---|---|
-| Choice | `p_max` from `probabilities` | act if `p_max ≥ threshold` |
-| Noul | the `noul` value | two-sided: `p ≤ loT` ⇒ yes-branch, `p ≥ hiT` ⇒ no-branch, otherwise **refuse** |
-| Score | our own expected-value distance | reject the server field; compute per §6.1 MAD formula **in code**, unit-tested against fixtures |
+| Choice | server `confidence` (≡ `p_max` form) | act if `confidence ≥ threshold` |
+| Score | server `confidence` | act if `confidence ≥ threshold` |
+| Noul | the `noul` value, two-sided | `noul ≥ hiT` ⇒ **yes**; `noul ≤ loT` ⇒ **no**; otherwise **refuse** |
+
+Noul is the only primitive needing our own threshold, because the API returns
+no confidence for it. Defaults: `loT = 0.20`, `hiT = 0.80`; destructive
+questions raise `hiT` to `0.95`, following the canonical worked example.
+
+> **Corrected defect.** An earlier draft read this gate as
+> `p ≤ loT ⇒ yes` / `p ≥ hiT ⇒ no`. That is **inverted**: it selected the
+> destructive branch exactly when the model was least confident the action was
+> destructive, inverting the safety mechanism. Found by the Codex review and
+> independently re-verified live.
 
 Every threshold is **configurable and recorded in the trace**. Refusals emit the
 full probability distribution, following `paulsmith/computer-use-jev`.
@@ -267,23 +282,46 @@ full probability distribution, following `paulsmith/computer-use-jev`.
    understands. **Model-facing handle.**
 
 Note from the live SDK: AppKit maps `accessibilityLabel` → **`AXDescription`**
-(not `AXTitle`). Name resolution order is
-**`AXIdentifier` → `AXDescription` → `AXTitle` → `AXHelp`**.
+(not `AXTitle`).
+
+**Corrected name-resolution order:**
+**`AXDescription` → `AXTitle` → `AXHelp` → `AXIdentifier`** — identifier **last**.
+An earlier draft put `AXIdentifier` first. Measured against real trees, that
+yields AppKit's private placeholders (`_NS:61`, `_NS:8`, `_NS:23`) as the
+displayed name, which is useless to a text-only model and contradicts §7.1's own
+"tie-breaker only" intent. See `evidence/ax-element-table-format.txt`.
+Measured coverage on this machine (4 running apps, 3,574 nodes): **identifier
+66%, description 7%, title 46%, named-by-any-order 74%**
+(`evidence/ax-quality-macos27.txt`). Those are Apple apps; third-party coverage
+is **UNVERIFIED** and the eval harness exists to measure it.
 
 ### 7.2 Serialised element line
 Flat, numbered, one element per line — a numbered list beats a nested tree for
 a text-only model and keeps the handle adjacent to the human name.
 
 ```
-[07] AXButton "Archive" | enabled | 512,180,72,24 | actions: press | /3/1/0
+[07] AXButton "Archive" | enabled | 512,180,72x24 | press | /3/1/0
 ```
 
-### 7.3 Resolution + refusal
+`enabled` is **tri-state**: `enabled`, `disabled`, or `-` when the attribute is
+absent. An earlier draft rendered absent as `disabled`, which mislabelled every
+`AXWindow` (they do not report `kAXEnabledAttribute`) as disabled. `nil` means
+not applicable, never disabled.
+
+### 7.3 Resolution, re-verification, refusal
 1. Jev returns a handle. Look it up in **this snapshot's** map — the only
    authoritative path.
-2. Re-verify the live element: role unchanged, `enabled == true`.
+2. **Re-verify by full fingerprint**, not just role+enabled. An index path can
+   silently point at a *different same-role control* after the UI changes, so
+   role alone is insufficient. Compare `role`, `subrole`, `identifier`, `title`
+   and `description` against the snapshot. Measured drift across 190 re-read
+   comparisons on static Finder/Safari trees: **0% on all fields**
+   (`evidence/ax-fingerprint-stability.txt`), so this is a sound identity guard.
+   *UNVERIFIED:* that it actually fires when a control is genuinely swapped —
+   that test requires mutating a real UI, which v1 does not do.
 3. Check the action is actually offered, via `AXUIElementCopyActionNames` — not
    a hardcoded role table.
+4. Perform **at most once**. Never retry a perform.
 
 **Refuse, deterministically, when any of these hold:**
 
@@ -292,15 +330,55 @@ a text-only model and keeps the handle adjacent to the human name.
 | `unknownHandle` | handle not in this snapshot's map |
 | `staleSnapshot` | snapshot bound to a different app/launch instance |
 | `disabled` | element reports `enabled == false` |
-| `roleChanged` | live role ≠ snapshotted role |
+| `fingerprintChanged` | any identity field differs from the snapshot |
 | `ambiguousName` | name fallback matched 0 or >1 elements |
 | `unsupportedAction` | role does not offer the requested action |
-| `lowConfidence` | gate threshold not met |
+| `lowConfidence` | Choice/Score confidence below threshold |
 | `ambiguousNoul` | noul value inside the refusal band |
-| `axError` | any AX call returned non-success (incl. `kAXErrorCannotComplete`) |
+| `readError` | an AX **read** returned non-success ⇒ no action taken |
+
+**`unknownOutcome` — a distinct terminal state, not a refusal.**
+Apple's own header (`AXUIElement.h:317-320`) states that
+`AXUIElementPerformAction` may return `kAXErrorCannotComplete` and that
+*"This does not necessarily mean that the function has failed."* Apple even
+suggests retrying — which on a destructive control means **double execution**.
+So an action timeout is neither a proven success nor a proven failure:
+
+- performs are attempted **once**, never retried;
+- `kAXErrorCannotComplete` on a perform ⇒ `unknownOutcome`;
+- `unknownOutcome` requires human adjudication and is reported distinctly, so
+  it is never conflated with "we chose not to act".
+
+See `evidence/ax-perform-timeout-semantics.md`.
 
 **Invariant A:** exactly one handle resolves to at most one element, or the run
-refuses. There is no "best guess" path.
+refuses. There is no "best-guess" path.
+
+### 7.4 Candidate ranking (measured, not aspirational)
+Raw trees are far too large to act on: **510–784 nodes**, of which 346–519 are
+named *and* actionable. Two stages, both measured:
+
+**Hard filter — keep only:** named (≥3 chars) · has ≥1 action · `enabled == true`
+· frame non-empty and intersecting the screen · **not** an AppKit-internal
+placeholder (identifier matching `_NS:<n>` *and* no description/title).
+
+**Score, then keep top K** (default **K = 24**, configurable):
+`4·enabled + 2·offersPress + 1·name≥3chars + 0.5·area>800px² + 3·goalTermMatch`,
+ties broken by name for determinism. `goalTerms` = lowercased goal tokens,
+split on non-alphanumerics.
+
+Measured (`evidence/ax-candidate-ranking.txt`):
+
+| app | nodes | after hard filter | top-24 tokens |
+|---|---|---|---|
+| Finder | 510 | **39** | 485 |
+| Safari | 784 | **59** | 421 |
+| TextEdit | 470 | **9** | 163 |
+
+The filter removes ~92%, and goal-term matching puts the right control first
+(`search` → `Search[AXButton]`; `delete` → `Delete[AXButton]`). **A top-24 table
+costs 163–485 tokens — the 28k budget in §4.6 is never the binding constraint.**
+Ranking governs *accuracy*, not tokens.
 
 ---
 
