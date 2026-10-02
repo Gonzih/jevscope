@@ -56,6 +56,10 @@ def main() -> int:
     leaks: list[str] = []
     scanned = 0
     for path in tracked_files(repo):
+        # Skip this file: it necessarily contains the very credential shapes
+        # it searches for, so scanning it would always fail.
+        if path.resolve() == Path(__file__).resolve():
+            continue
         try:
             if path.stat().st_size > MAX_BYTES:
                 continue
