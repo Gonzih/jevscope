@@ -1,0 +1,29 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Swift / SwiftPM
+.build/
+.swiftpm/
+Package.resolved
+*.xcodeproj
+*.xcworkspace
+DerivedData/
+
+# Runtime state
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.trace/
+captures/
+*.axtrace
+
+# ATC
+.atc/
+.atc-sessions/
+
+# macOS
+.DS_Store
