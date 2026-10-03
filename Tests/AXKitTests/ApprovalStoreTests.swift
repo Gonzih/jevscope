@@ -199,3 +199,100 @@ final class ApprovalStoreTests: XCTestCase {
         XCTAssertEqual(text.split(separator: "\n").count, 1, "one JSON object per line")
     }
 }
+/// SPEC §8.4: the scripted backend makes the dangerous paths testable, and the
+/// ACTION LOG COUNT is the assertion — not the message.
+final class ScriptedBackendTests: XCTestCase {
+
+    private func element(_ title: String, path: String,
+                         focused: Bool = false) -> CapturedElement {
+        CapturedElement(handle: Handle(index: 0), path: path, role: "AXButton",
+                        subrole: nil, identifier: nil, title: title,
+                        elementDescription: nil, value: nil, enabled: .enabled,
+                        focused: focused, frame: Frame(x: 10, y: 10, width: 80, height: 30),
+                        actions: ["AXPress"])
+    }
+
+    func testSameRoleReplacementInvalidatesTheFingerprint() throws {
+        let b = ScriptedBackend(elements: [element("Archive", path: "/0")],
+                               events: [.replaceSameRole(path: "/0")])
+        // Read BEFORE via the snapshot, which does not consume the event.
+        let before = try b.snapshot(appBundleID: "x", generation: 1).elements[0]
+        _ = try b.supports(.press, on: before)      // this applies the event
+        let after = try b.reAcquire(path: "/0")
+        XCTAssertEqual(before.role, after.role, "the role is deliberately unchanged")
+        XCTAssertNotEqual(before.fingerprint, after.fingerprint,
+                          "a same-role swap must change the fingerprint")
+        XCTAssertEqual(b.actionLog.count, 0)
+    }
+
+    func testRowReuseChangesValue() throws {
+        let b = ScriptedBackend(elements: [element("Row", path: "/0")],
+                               events: [.reuseRow(path: "/0")])
+        let before = try b.snapshot(appBundleID: "x", generation: 1).elements[0]
+        _ = try b.supports(.press, on: before)
+        let after = try b.reAcquire(path: "/0")
+        XCTAssertEqual(after.value, "a different document")
+        XCTAssertEqual(b.actionLog.count, 0)
+    }
+
+    func testAppRestartChangesLaunchIdentity() throws {
+        let b = ScriptedBackend(elements: [element("Archive", path: "/0")],
+                               events: [.appRestart])
+        let before = try b.launchID(appBundleID: "x")
+        _ = try b.supports(.press, on: try b.reAcquire(path: "/0"))
+        let after = try b.launchID(appBundleID: "x")
+        XCTAssertNotEqual(before, after, "a restart must invalidate the binding")
+        XCTAssertEqual(b.actionLog.count, 0)
+    }
+
+    func testSelectionChangeLeavesFingerprintIntactButIsDetectable() throws {
+        let b = ScriptedBackend(elements: [element("Archive", path: "/0", focused: false)],
+                               events: [.changeSelection])
+        let before = try b.snapshot(appBundleID: "x", generation: 1).elements[0]
+        _ = try b.supports(.press, on: before)
+        let after = try b.reAcquire(path: "/0")
+        XCTAssertEqual(before.fingerprint, after.fingerprint,
+                       "selection is not part of the fingerprint by design")
+        XCTAssertNotEqual(before.focused, after.focused,
+                          "which is exactly why focus needs a live recheck")
+    }
+
+    func testTargetBecomingFocusedIsRefusedWithAnEmptyActionLog() throws {
+        let b = ScriptedBackend(elements: [element("Field", path: "/0", focused: true)],
+                               events: [.targetBecomesFocused])
+        XCTAssertThrowsError(
+            try b.revalidatePredicate(for: element("Field", path: "/0"),
+                                     primitive: .setValue))
+        XCTAssertEqual(b.actionLog.count, 0,
+                       "B12: a refusal must leave the action log empty")
+    }
+
+    func testPreflightReadFailureIsRefusedWithAnEmptyActionLog() throws {
+        let b = ScriptedBackend(elements: [element("Archive", path: "/0")],
+                               events: [.preflightReadFails(attribute: "AXEnabled")])
+        XCTAssertThrowsError(
+            try b.revalidatePredicate(for: element("Archive", path: "/0"),
+                                     primitive: .press))
+        XCTAssertEqual(b.actionLog.count, 0)
+    }
+
+    func testCannotCompleteRecordsExactlyOneDispatch() throws {
+        // The unknown-outcome counterpart to the empty-log refusal assertions.
+        let b = ScriptedBackend(elements: [element("Archive", path: "/0")],
+                               events: [.dispatchCannotComplete])
+        XCTAssertThrowsError(try b.dispatch(.press, on: element("Archive", path: "/0"),
+                                            arguments: nil)) { error in
+            guard case AXBackendError.dispatchedUnknownOutcome = error else {
+                return XCTFail("expected unknownOutcome, got \(error)")
+            }
+        }
+        XCTAssertEqual(b.actionLog.count, 1, "unknown outcome means dispatched ONCE")
+    }
+
+    func testPlainDispatchLogsExactlyOnce() throws {
+        let b = ScriptedBackend(elements: [element("Archive", path: "/0")])
+        _ = try b.dispatch(.press, on: element("Archive", path: "/0"), arguments: nil)
+        XCTAssertEqual(b.actionLog.count, 1)
+        XCTAssertEqual(b.actionLog.first?.primitive, "press")
+    }
+}
