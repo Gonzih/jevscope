@@ -1,10 +1,9 @@
-# Choice confidence is affine in p_max — verified 2026-10-02
+# Choice confidence is an affine normalization of p_max — verified & corrected
 
-SPEC §4.4 warns that `confidence` is an **affine normalization** of `p_max`, not
-`p_max` itself, so a probability threshold is not interchangeable with a
-confidence threshold. Codex was asked to check this specifically.
+SPEC §5.4 warns that `confidence` and `p_max` are **not interchangeable**
+numbers. Codex was asked to check this specifically.
 
-## Verification
+## Verification of the forward map
 
 Choice questions with 2, 3, and 5 options, six states each (18 samples):
 
@@ -20,30 +19,42 @@ Choice questions with 2, 3, and 5 options, six states each (18 samples):
 | 5 | 0.78 | 0.720 | 0.725 | 0.005 |
 | 5 | 0.67 | 0.580 | 0.588 | 0.008 |
 
-**max error 0.0150, mean 0.0068** across 18 samples — consistent with the
-two-decimal rounding of published probabilities. **CONFIRMED.**
+**max error 0.0150, mean 0.0068** — consistent with two-decimal rounding.
+**CONFIRMED.** The spec's example holds exactly: **n = 3, p_max = 0.80 →
+confidence 0.70**, not 0.80.
 
-The spec's concrete example holds exactly: **n = 3, p_max = 0.80 → confidence
-0.70**, not 0.80.
+## What the map actually does
 
-## Why this matters operationally
+`confidence = (p_max − 1/n) / (1 − 1/n)` maps **uniform (1/n) → 0** and **1 → 1**.
+It is a **normalization over the option count**, and that is its purpose.
 
-The affine map depends on `n`, so a fixed confidence threshold means a
-different probability threshold at every option count:
+Inverting, `p_max = confidence · (1 − 1/n) + 1/n`. At `confidence ≥ 0.85`:
 
-| n | confidence ≥ 0.85 ⟺ p_max ≥ | n | confidence ≥ 0.85 ⟺ p_max ≥ |
-|---|---|---|---|
-| 2 | 0.85 | 5 | 0.7125 |
-| 3 | 0.900 | 255 | 0.3367 |
+| n | 2 | 3 | 5 | 12 | 24 | 100 | 255 |
+|---|---|---|---|---|---|---|---|
+| implied `p_max ≥` | 0.925 | 0.900 | 0.880 | 0.863 | **0.85625** | 0.852 | 0.851 |
 
-Inverting: `p_max = confidence · (1 − 1/n) + 1/n`.
+The implied probability lies in **[0.851, 0.925]** across the entire legal
+option range — essentially constant. So a fixed confidence threshold is
+**already candidate-count independent**, which is exactly what a normalization
+should deliver.
 
-Consequences for the spec:
-1. jevscope gates on `confidence` and **never** substitutes a `p_max` value
-   for a confidence threshold.
-2. A fixed confidence threshold is **not** a fixed probability bar — with 24
-   candidates, confidence 0.85 admits `p_max` ≥ 0.3975, far weaker than the
-   0.85 a two-option question would demand.
-3. The corpus (§9) must record **both** the confidence and the full
-   probability vector, because the two are not interchangeable and only the
-   vector is comparable across different candidate counts.
+## Correction
+
+An intermediate revision of SPEC §5.4 claimed that at 24 options a 0.85
+confidence threshold "would admit `p_max ≈ 0.40` — a genuinely ambiguous
+answer", and added a `p_max ≥ 0.80` floor on that basis. **That arithmetic was
+wrong**: the correct value at n = 24 is **0.85625**, comfortably above 0.80, so
+the added floor was **redundant**. Codex caught the error; the floor has been
+removed rather than left in as decorative defense.
+
+The valid part of the warning is retained: the two numbers are not equal and
+must never be substituted for one another. SPEC §5.2 rule 9 therefore recomputes
+`p_max` from `probabilities` rather than deriving it from `confidence`, and the
+corpus records both.
+
+## Note on Score
+
+This normalization is a **Choice** property only. Score confidence uses the
+separate MAD formula (`argmax`-based, `evidence/score-confidence-findings.md`),
+and Noul returns no confidence at all.

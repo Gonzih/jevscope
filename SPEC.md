@@ -241,10 +241,8 @@ Errors **never** default to zero, the first option, a guessed handle, or success
 ```
 no_action   if operation == "none"                    -> Decision(action: .none)
 no_action   if target    == "none"                    -> Decision(action: .none)
-refused     if operation fails its gate (confidence < 0.85 OR p_max < 0.80)
-                                                    -> lowConfidence
-refused     if target    fails its gate (confidence < 0.85 OR p_max < 0.80)
-                                                    -> lowConfidence
+refused     if operation confidence < 0.85            -> lowConfidence
+refused     if target    confidence < 0.85            -> lowConfidence
 refused     if target.handle is not a candidate in THIS snapshot
                                                     -> unknownHandle
 refused     unless risk.score <= 0.20 AND risk.confidence >= 0.85
@@ -265,28 +263,33 @@ Finite configuration required, with `0 ≤ loT < 0.5 < hiT ≤ 1`; boundaries ar
 Defaults: `operationConfidence 0.85`, `targetConfidence 0.85`,
 `riskScoreMax 0.20`, `riskConfidenceMin 0.85`, `noulLoT 0.20`, `noulHiT 0.80`.
 
-**Every Choice gate is two-sided.** Confidence alone is not a fixed bar, because
-the affine map depends on the number of options
-(`evidence/choice-confidence-affine.md`, 18 samples, max error 0.015):
+**Confidence is not `p_max`, but the map is a normalization.**
+`confidence = (p_max − 1/n)/(1 − 1/n)` sends uniform (`1/n`) to 0 and 1 to 1
+(`evidence/choice-confidence-affine.md`; 18 samples, max error 0.015). Inverting,
+`p_max = confidence · (1 − 1/n) + 1/n`, so at `confidence ≥ 0.85`:
 
-| options n | confidence ≥ 0.85 ⟺ p_max ≥ | options n | confidence ≥ 0.85 ⟺ p_max ≥ |
-|---|---|---|---|
-| 2 | 0.850 | 24 | 0.3975 |
-| 3 | 0.900 | 255 | 0.3367 |
+| options n | 2 | 3 | 5 | 12 | 24 | 100 | 255 |
+|---|---|---|---|---|---|---|---|
+| implied `p_max ≥` | 0.925 | 0.900 | 0.880 | 0.863 | 0.856 | 0.852 | 0.851 |
 
-Inverting: `p_max = confidence · (1 − 1/n) + 1/n`.
-
-With K = 24 candidates a 0.85 confidence threshold alone would admit
-**p_max ≈ 0.40** — a genuinely ambiguous answer. So each Choice gate requires
-**both**:
+The implied probability sits in **[0.851, 0.925]** across the entire legal
+option range — nearly constant. That is the map's purpose, so **a confidence
+threshold is already candidate-count independent** and the gates need only:
 
 ```
-confidence ≥ threshold   AND   p_max ≥ pMaxFloor (default 0.80)
+confidence ≥ threshold      (default 0.85)
 ```
 
-`pMaxFloor` is absolute and therefore **candidate-count independent**, which is
-the whole point. The corpus records both the confidence and the full
-probability vector, because only the vector compares across K sweeps.
+> **Two corrections.** An intermediate revision of this section added a
+> `p_max ≥ 0.80` floor on the stated grounds that 24 options would admit
+> `p_max ≈ 0.40`. **That arithmetic was wrong** — the correct value at n = 24 is
+> **0.85625**, and the floor is therefore **redundant** under a 0.85 confidence
+> gate. Codex caught it. The floor is removed rather than kept as decoration.
+>
+> The underlying warning still stands and is why §5.2 rule 9 recomputes `p_max`
+> from `probabilities`: the two numbers are **not interchangeable**, so a
+> probability must never be substituted for a confidence threshold (or the
+> reverse) anywhere in the codebase or the corpus.
 
 The `applied` Noul gates **completion**, not permission: `applied ≥ 0.80` ⇒
 `Decision(action: .alreadyDone)`, `applied ≤ 0.20` ⇒ proceed, else
