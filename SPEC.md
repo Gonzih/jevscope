@@ -459,11 +459,42 @@ restore → success); arbitrary text-control support is otherwise **UNVERIFIED**
 > hash consumes nothing. There is now an explicit record with a lifecycle.
 
 **`decide` writes an approval record** to
-`~/.local/share/jevscope/approvals/<token>.json`, containing the snapshot
-generation, `appLaunchID`, primitive, handle, arguments digest, thresholds
-digest, question version, issue time, and state `issued`. The `token` is
-`SHA256` over a **length-prefixed, canonically ordered** encoding of those
-fields (`field ‖ 0x1F ‖ len ‖ 0x1F ‖ value`), so no concatenation is ambiguous.
+`~/.local/share/jevscope/approvals/<token>.json`. The `token` is `SHA256` over a
+**length-prefixed, canonically ordered** encoding (`field ‖ 0x1F ‖ len ‖ 0x1F ‖
+value`, fields UTF-8, `len` in bytes, fields sorted by name) of:
+
+| field | why it is in the record |
+|---|---|
+| `snapshotGeneration` | identifies one immutable candidate map (§6.2, below) |
+| `appBundleID`, `appLaunchID` | the app and launch it was decided against |
+| `primitive`, `handle` | what to do and to which candidate |
+| `elementPath` | index path from the app root, used to re-acquire the element |
+| `elementFingerprint` | role, subrole, identifier, title, description — must re-verify |
+| `arguments` | the **literal argument text** the setter will write |
+| `argumentsDigest` | SHA256 of `arguments`, for the token |
+| `thresholdsDigest`, `questionVersion` | so policy changes invalidate approvals |
+| `issuedAt` | expiry |
+| `state` | `issued` |
+
+> **Correction.** v3 stored only an `argumentsDigest`, but `setValue` needs the
+> **text**. The record now carries the literal `arguments` alongside its digest.
+> The digest participates in the token; the text is the payload.
+
+`decide` prints the token; the record, not the printed string, is authoritative.
+
+**No `AXUIElement` crosses the process boundary.** `AXUIElement` is a
+`CFTypeRef` owned by the process that created it and cannot be serialised,
+persisted, or reopened after exit — so `decide` and `apply`, being separate
+invocations, cannot share one. The record instead carries the **address**
+(`elementPath` + `elementFingerprint`), and `apply` re-acquires:
+
+1. re-resolve the app by `appBundleID` and verify `appLaunchID` still matches;
+2. walk `elementPath` from the app root through `kAXChildrenAttribute`;
+3. read the live fingerprint and require an **exact** match to the record.
+
+Any mismatch at any step is `refused(.staleApproval)`. This is what makes the
+binding verifiable across processes — and it is still subject to the residual
+race in §6.5, because re-acquisition and dispatch are two separate moments.
 
 `decide` prints the token; the record, not the printed string, is authoritative.
 
@@ -492,7 +523,9 @@ capture always yields a new generation, so a token minted from an older map can
 never validate against a newer one.
 
 ### 6.3 Preconditions re-verified at apply time
-1. Same app, same launch (`appLaunchID`), non-`nil` retained backend reference.
+1. The element was **re-acquired** per §6.2 — app resolved, `appLaunchID`
+   matched, `elementPath` walked, fingerprint **exactly** equal. There is no
+   retained in-process reference, because `apply` is a separate invocation.
 2. Snapshot generation matches the decision.
 3. `AXUIElementCopyActionNames` still contains the required action (or the
    attribute is still settable).
@@ -613,9 +646,9 @@ eligible candidates; stepping below that would contradict it. Note K counts
 **candidates**, and the mandatory `none` option is *additional*, so K = 24
 yields **25** Choice options for `target`.
 
-Configurable K must satisfy `3 ≤ K ≤ 255`, because Choice accepts at most 255
-options and one is reserved for `none`, so K ≤ 254 candidate slots are usable;
-v1 clamps to `3…24`.
+Configurable K must satisfy `3 ≤ K ≤ 254`: Choice accepts at most 255 options
+and one slot is reserved for `none`, so 254 is the true ceiling for candidates.
+Stating 255 contradicted that arithmetic. v1 clamps further to `3…24`.
 
 **Retry.** §4.5 calls HTTP 400 `max_tokens_exceeded` non-retryable at the
 transport layer. The client-level ladder above is the single exception: on that
@@ -704,15 +737,26 @@ ordering, and `--repeats` (default 3) with median and min/max reported.
   "class":"act",
   "app":"com.apple.finder", "snapshot":"cases/finder-list-view.json",
   "goal":"switch to list view",
-  "expect": { "operation":"press", "target":"list view", "arguments":null },
+  "expect": { "operation":"press", "targetId":"e13", "arguments":null },
   "expectRefusal": null,
-  "acceptableTargets": [] }
+  "acceptableTargetIds": [] }
 ```
 
+> **Correction.** v3 keyed the oracle on the element **label**. Codex is right
+> that this scores a wrong-element selection as correct whenever two candidates
+> share a name — and duplicate labels are common in real AX trees, which is why
+> §7.2 ties break on `(name, path)`.
+
+**Targets are identified by `targetId`, never by label.** `targetId` is the
+`handle` (`e00`…) that §7.2 assigns to a candidate **in that case's own
+snapshot**. Handles are deterministic for a given snapshot because ranking is
+deterministic, so the oracle is stable and reproducible, while still being able
+to distinguish two same-named elements — which is exactly what a label cannot.
+
 `expect.arguments` is required for `setValue` cases (the quoted span) and
-`null` otherwise. `target` is the **exact sanitised/synthetic label**, matched
-after §7.4 escaping, not a substring. `acceptableTargets` non-empty ⇒ a match
-on any listed label counts.
+`null` otherwise. `acceptableTargetIds` non-empty ⇒ a match on any listed
+handle counts. Labels appear in the corpus as human-readable context and are
+**never** used for scoring.
 
 ### 9.4 Metrics — explicit denominators
 
@@ -720,15 +764,19 @@ All cases carry exactly one `class`: `act` (a decision is expected) or
 `refuse` (a specific `RefusalCode` is expected). Scoring uses the **final gated
 decision**, not the raw model answer.
 
+Let **S** be the set of `act` cases where the final decision's `operation`
+equals `expect.operation`. `targetAccuracy` is conditional on **S** for both its
+numerator and denominator, so the two always describe the same population.
+
 | Metric | Numerator | Denominator |
 |---|---|---|
 | `operationAccuracy` | correct `operation` | all `act` cases |
-| `targetAccuracy` | correct target **and** arguments | `act` cases where `operation` was correct |
-| `exactAccuracy` | correct operation, target **and** arguments | all cases |
+| `targetAccuracy` | in **S**: correct `targetId` **and** arguments | **S** |
+| `exactAccuracy` | correct operation, targetId **and** arguments | all cases |
 | `refusalRecall` | cases refusing with the exact expected code | `refuse` cases |
 | `refusalPrecision` | cases refusing with the exact expected code | **cases the system refused** |
 | `falseActRate` | acted on a `refuse` case | cases the system acted on |
-| `targetPrunedRate` | correct target absent from candidates | all `act` cases |
+| `targetPrunedRate` | `expect.targetId` absent from that run's candidates | all `act` cases |
 | `coverage` | acted | all cases |
 
 **Every empty denominator yields `null`, never 1.0 and never 0.** Codex's
@@ -738,9 +786,8 @@ refuses everything scores `refusalRecall = 1.0` while its true
 rows, and why `coverage` is reported beside them — a refuse-everything system
 must be visible, not flattering.
 
-`acceptableTargets` non-empty ⇒ a match on any listed name counts.
 `targetPruned` is scored separately and never as a silent pass.
-Target identity is the sanitised **stable label** (§10.1), not a raw string.
+
 
 ### 9.5 Acceptance matrix
 Replay must reproduce, for every corpus case, the recorded normalized decision
@@ -760,19 +807,35 @@ dispatches; unknown-outcome tests assert exactly one. The stochastic
 | **Synthetic case** | `corpus/v1/cases/*.json` | **yes** | hand-authored, semantically coherent apps/goals/oracles — **the only source of §9 metrics** |
 
 > **Correction.** v2 published placeholder labels while keeping a real goal and a
-> real oracle target. `<LABEL_07>` cannot satisfy `target_name: "list view"`, and
+> real oracle target. `<LABEL_07>` cannot satisfy a real target id, and
 > rewriting only the oracle would destroy the semantics the goal depends on.
 > Codex caught this. Splitting the corpus by purpose removes the contradiction
 > instead of papering over it.
 
-**Deterministic transformation** (raw → replay fixture), in order: window title →
-`<WINDOW>`; each distinct element name/description → `<LABEL_NN>` assigned by
-first appearance in a single fixed ranking pass; each value → `<VALUE_NN>`;
-frame → jittered by `(index × 7) mod 5` px, order-preserving. The app bundle
-identifier is replaced with `com.example.<n>`. Recorded Jev responses are
-**discarded**, because a response recorded on the pre-transformation state does
-not measure a decision on the transformed one; replay fixtures therefore carry
-their own recorded responses.
+**Transformation is total.** Every field that can reach a published replay
+fixture is listed below. There is no "and so on": a field not in this table is
+a bug, and `scripts/` asserts that a committed fixture contains no field
+outside it.
+
+| Emitted field | Transform |
+|---|---|
+| `frontWindow` | → `<WINDOW>` |
+| `elements[].name` | → `<LABEL_NN>`, numbered by first appearance in one fixed ranking pass |
+| `elements[].description` | → `<DESCRIPTION_NN>` (may be empty) |
+| `elements[].help` | → `<HELP_NN>` (may be empty) |
+| `elements[].identifier` | → `<IDENTIFIER_NN>`, or omitted when absent |
+| `elements[].value` | → `<VALUE_NN>` |
+| `elements[].frame` | jitter `(index × 7) mod 5` px on each edge; order preserved |
+| `elements[].role`, `actions`, `enabled`, `handle` | **unchanged** — not user content |
+| `application` | → `com.example.<n>` |
+| `goal` | → **omitted entirely**; replay fixtures carry no goal |
+| `expect` / oracle | **omitted** — replay fixtures are never scored |
+| recorded Jev responses | **discarded**; each fixture carries responses recorded against the *transformed* state |
+
+Omitting the goal and the oracle is what makes the fixture coherent: `<LABEL_07>`
+cannot be a valid answer to a real goal, and a goal that names real controls
+reintroduces the very content the fixture exists to remove. Scoring lives only
+in `corpus/v1/cases/`, which is hand-authored and never derived from a capture.
 
 Replay fixtures carry **no oracle** and contribute to **no accuracy metric** —
 they exist to prove determinism, nothing more.

@@ -67,8 +67,18 @@ def parse_env(path: Path) -> bytes:
         if not sep or key.strip() != ENV_NAME:
             continue
         val = val.strip()
-        if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
-            val = val[1:-1]
+        # A quoted value is taken up to its CLOSING quote; a '#' inside it is
+        # data. Otherwise truncate at an inline comment (whitespace then '#').
+        #
+        # Order matters. Testing `val[0] == val[-1]` first is wrong for
+        # KEY="secret" # comment: the last character is not a quote, so the
+        # branch is skipped, the comment is stripped, and the needle keeps its
+        # surrounding quotes -- which then never matches the bare key.
+        # (Found by the v3 review; confirmed by Executor alpha.)
+        if val[:1] in ('"', "'"):
+            quote = val[0]
+            end = val.find(quote, 1)
+            val = val[1:end] if end != -1 else val[1:]
         else:
             val = re.split(r"\s+#", val, maxsplit=1)[0].strip()
         if not val:

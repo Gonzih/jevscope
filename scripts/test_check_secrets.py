@@ -43,10 +43,11 @@ class Result:
         return any(k in self.out for k in (KEY_A, KEY_B, KEY_C))
 
 
-def make_repo(key: str = KEY_A, env_comment: str = "") -> Path:
+def make_repo(key: str = KEY_A, env_comment: str = "", quote: bool = False) -> Path:
     d = Path(tempfile.mkdtemp(prefix="chksec-"))
     subprocess.run(["git", "-C", str(d), "init", "-q"], check=True)
-    env = f"{ENV_NAME}={key}\n" if not env_comment else f"{ENV_NAME}={key} # {env_comment}\n"
+    rendered = f'"{key}"' if quote else key
+    env = f"{ENV_NAME}={rendered}\n" if not env_comment else f"{ENV_NAME}={rendered} # {env_comment}\n"
     (d / ".env").write_text(env)
     (d / ".gitignore").write_text(".env\n")
     scripts = d / "scripts"
@@ -228,6 +229,24 @@ def case_shape_token_in_filename_not_disclosed():
     shutil.rmtree(d, ignore_errors=True)
 
 
+def case_quoted_env_with_inline_comment():
+    """Regression for a silent FALSE NEGATIVE, second form.
+
+    KEY="secret" # comment: testing val[0]==val[-1] fails because the last
+    character is not a quote, so the comment is stripped and the needle keeps
+    its surrounding quotes, which never match the bare key.
+    """
+    for label, quote in (("quoted", True), ("bare", False)):
+        d = make_repo(key=KEY_C, env_comment="operator note", quote=quote)
+        (d / "planted.md").write_text(f"value={KEY_C}\n")
+        subprocess.run(["git", "-C", str(d), "add", "-A"], check=True)
+        r = run(d)
+        record(f"{label} unknown-shape key + inline comment -> exit 1",
+               r.code == 1, f"code={r.code}")
+        record(f"  ... and not echoed ({label})", not r.leaked)
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def main() -> int:
     for fn in (case_clean, case_secret_in_file, case_placeholder_doc,
                case_secret_in_checker_itself, case_oversized,
@@ -235,6 +254,7 @@ def main() -> int:
                case_untracked_is_not_scanned, case_secret_in_filename,
                case_env_comment_unknown_shape,
                case_shape_token_in_filename_not_disclosed,
+               case_quoted_env_with_inline_comment,
                case_second_credential_same_prefix, case_no_env):
         fn()
     passed = sum(1 for _, ok, _ in RESULTS if ok)
