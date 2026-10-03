@@ -40,6 +40,11 @@ public enum CandidateSelection {
     /// partly offscreen and still be visible. (An exact key lookup rejected
     /// every element in a live TextEdit tree — 470 captured, 0 eligible.)
     public static func isEligible(_ e: CapturedElement, screens: [CGRect]) -> Bool {
+        // A missing or placeholder role means we cannot reason about the
+        // element's capabilities at all, so it is never a candidate.
+        guard !e.role.isEmpty, e.role != "?", !e.role.hasPrefix("AXUnknown") else {
+            return false
+        }
         guard let name = e.name, name.count >= 3 else { return false }
         guard !name.hasPrefix("."), !name.hasPrefix("AX") else { return false }
         guard !e.actions.isEmpty else { return false }

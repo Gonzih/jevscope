@@ -90,11 +90,15 @@ public enum SemanticExclusions {
     public static let pattern =
         #"\b(delete|erase|destroy|remove|empty|trash|wipe|format|reinstall|uninstall|send|publish|share|purchase|buy|checkout|pay|transfer|revoke|reset|force quit|terminate|shutdown|sign out)\b"#
 
-    public static func match(_ e: CapturedElement) -> String? {
-        let haystack = [e.name, e.elementDescription]
-            .compactMap { $0 }
-            .joined(separator: " ")
-        guard let regex = try? NSRegularExpression(pattern: pattern,
+    /// `ancestorLabels` are the titles of enclosing menus. A harmless-looking
+    /// item inside a "Delete" menu is still a delete, so ancestors count
+    /// (re-validation).
+    public static func match(_ e: CapturedElement,
+                             ancestorLabels: [String] = []) -> String? {
+        let own = [e.name, e.elementDescription].compactMap { $0 }
+        let haystack = (own + ancestorLabels).joined(separator: " ")
+        guard !haystack.isEmpty,
+              let regex = try? NSRegularExpression(pattern: pattern,
                                                    options: [.caseInsensitive]) else {
             return nil
         }
@@ -102,6 +106,13 @@ public enum SemanticExclusions {
         guard let m = regex.firstMatch(in: haystack, range: range),
               let r = Range(m.range, in: haystack) else { return nil }
         return String(haystack[r])
+    }
+
+    /// A secure-field subrole read that FAILS is not "not secure": it is
+    /// unknown, and unknown must refuse (re-validation).
+    public static func subroleIsSecure(_ subrole: String?) -> Bool? {
+        guard let subrole else { return false }        // absent => not a secure field
+        return subrole == "AXSecureTextField"
     }
 }
 
@@ -131,12 +142,13 @@ public enum Gate {
         let target = try? ChoiceAnswer(question: "target", json: tRaw)
         let applied = try? NoulAnswer(question: "applied", json: aRaw)
         guard let operation, let target, let applied else { return .failure(.invalidAnswer) }
-        // Phase 1 carries a risk answer too. It must be VALID even though it
-        // never authorises anything -- a malformed one is invalidAnswer, not a
-        // silently ignored extra (Codex B4).
-        if let riskRaw = r.answers["risk"] {
-            guard let risk = try? ScoreAnswer(question: "risk", json: riskRaw, levelCount: 3),
-                  (try? risk.validateTie()) != nil else { return .failure(.invalidAnswer) }
+        // Phase 1 risk is REQUIRED. It never authorises anything -- Phase 2
+        // gates risk on the bound operation -- but a MISSING risk answer is a
+        // malformed response, not a licence to act (re-validation).
+        guard let riskRaw = r.answers["risk"],
+              let risk = try? ScoreAnswer(question: "risk", json: riskRaw, levelCount: 3),
+              (try? risk.validateTie()) != nil else {
+            return .failure(.invalidAnswer)
         }
         guard (try? operation.validate(expectedKeys: operationKeys)) != nil,
               (try? target.validate(expectedKeys:

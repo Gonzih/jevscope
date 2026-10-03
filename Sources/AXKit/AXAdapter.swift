@@ -97,15 +97,27 @@ public final class AXAdapter: AXBackend, @unchecked Sendable {
 
     /// Safe child enumeration. The CFArrayGetValueAtIndex + load(as:) route
     /// segfaults; this bridges to NSArray and type-checks first.
-    private func children(_ e: AXUIElement) -> [AXUIElement] {
+    ///
+    /// Returns nil when the READ FAILED, which is deliberately distinct from
+    /// an empty array. Callers must treat nil as "enumeration lost" and mark
+    /// the snapshot partial -- returning [] for both would silently swallow a
+    /// dropped subtree and report a complete tree (re-validation).
+    private func childrenChecked(_ e: AXUIElement) -> [AXUIElement]? {
         let r = copyAttribute(e, kAXChildrenAttribute as String)
-        guard r.error == nil, let arr = r.value as? NSArray else { return [] }
+        if let err = r.error {
+            return (err == .noValue) ? [] : nil      // no children vs unreadable
+        }
+        guard let arr = r.value as? NSArray else { return nil }
         let want = AXUIElementGetTypeID()
         var out: [AXUIElement] = []
         for case let obj as CFTypeRef in arr where CFGetTypeID(obj) == want {
             out.append(unsafeDowncast(obj, to: AXUIElement.self))
         }
         return out
+    }
+
+    private func children(_ e: AXUIElement) -> [AXUIElement] {
+        childrenChecked(e) ?? []
     }
 
     // MARK: AXBackend
@@ -177,13 +189,15 @@ public final class AXAdapter: AXBackend, @unchecked Sendable {
                 elementDescription: desc, value: value, enabled: enabled,
                 focused: focused, frame: fr, actions: acts))
 
-            let kids = children(e)
-            if kids.isEmpty, copyAttribute(e, kAXChildrenAttribute as String).error == nil {
-                // enumeration succeeded and yielded nothing — not truncation
-            } else if kids.isEmpty {
+            switch childrenChecked(e) {
+            case .some(let kids):
+                if kids.isEmpty { /* a genuine leaf, not truncation */ }
+                for (i, c) in kids.enumerated() { walk(c, path: path + [i], depth: depth + 1) }
+            case .none:
+                // Enumeration LOST: the subtree below is unknown, so this
+                // snapshot is partial rather than falsely complete.
                 diag.truncated += 1; partial = true
             }
-            for (i, c) in kids.enumerated() { walk(c, path: path + [i], depth: depth + 1) }
         }
         walk(root, path: [], depth: 0)
 

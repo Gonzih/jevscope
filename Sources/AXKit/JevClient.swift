@@ -35,14 +35,18 @@ public struct JevRequest: @unchecked Sendable {
 
 /// Minimal JSON value wrapper so mixed-type payloads (Choice criteria are a map,
 /// Score criteria are an array) survive encoding.
-/// Strict number reader. `(v as? NSNumber)` happily converts a JSON boolean to
-/// 1.0/0.0, so a `true` in a numeric field would pass a range check (Codex B5).
+/// Strict number reader (Codex B5, then the re-validation parser bug).
+///
+/// The discriminator is CFBooleanGetTypeID ALONE. `v is Bool` is WRONG here:
+/// JSONSerialization bridges the integers 0 and 1 to NSNumber values that
+/// satisfy `is Bool`, so using it rejected every legitimate integer-valued
+/// probability. CFBooleanGetTypeID separates them correctly -- JSON `false` and
+/// `true` are CFBoolean, JSON `0` and `1` are __NSCFNumber.
 func strictDouble(_ v: Any) -> Double? {
-    if v is Bool { return nil }          // CFBoolean bridges to NSNumber
-    if let n = v as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() {
-        return n.doubleValue
-    }
-    return nil
+    guard let n = v as? NSNumber else { return nil }
+    guard CFGetTypeID(n) != CFBooleanGetTypeID() else { return nil }
+    let d = n.doubleValue
+    return d.isFinite ? d : nil
 }
 
 /// JSON object keys are only canonical decimal integers when they round-trip.
@@ -284,7 +288,11 @@ public enum JevError: Error, Sendable {
     case missingKey
     case http(Int, String)
     case malformed(String)
+    /// The server rejected the request as over budget. Terminal unless the
+    /// caller steps the ladder down once.
     case budgetExhausted
+    /// The CLIENT refused to send: the serialized request is already over policy.
+    case bodyTooLarge(Int)
 }
 
 public final class JevClient: @unchecked Sendable {
@@ -311,8 +319,16 @@ public final class JevClient: @unchecked Sendable {
         req.httpMethod = "POST"
         req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(
-            withJSONObject: request.jsonBody)
+
+        // SPEC 7.3: the policy covers the ENTIRE request, not just `state`.
+        // `criteria` duplicates the candidate table for the target question, so
+        // measuring state alone understated the body -- a 31.7 KB request
+        // slipped through a 30 KB policy (re-validation).
+        let body = try JSONSerialization.data(withJSONObject: request.jsonBody)
+        if ByteBudget.exceeds(body.count) {
+            throw JevError.bodyTooLarge(body.count + ByteBudget.framingAllowance)
+        }
+        req.httpBody = body
 
         let (data, response) = try await session.data(for: req)
         guard let http = response as? HTTPURLResponse else {

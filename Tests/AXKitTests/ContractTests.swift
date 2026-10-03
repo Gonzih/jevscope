@@ -349,12 +349,16 @@ final class StrictNumberTests: XCTestCase {
         // Swift Bool must never read as 1.0/0.0.
         XCTAssertNil(strictDouble(true))
         XCTAssertNil(strictDouble(false))
-        // NB: NSNumber(value: 0) can itself carry a CFBoolean type, so it is
-        // correctly rejected. Real JSON integers arrive as __NSCFNumber.
-        XCTAssertNil(strictDouble(NSNumber(value: 0)))
+        // NSNumber(value: 0) is a CFNumber and is correctly ACCEPTED as 0.0.
+        // An earlier revision asserted the opposite, which would have required
+        // rejecting legitimate integer probabilities (see StrictNumberJSONTests).
+        XCTAssertEqual(strictDouble(NSNumber(value: 0)), 0.0)
         XCTAssertEqual(strictDouble(NSNumber(value: 1.5)), 1.5)
         XCTAssertEqual(strictDouble(NSNumber(value: 3)), 3.0)
         XCTAssertEqual(strictDouble(0.0), 0.0)
+        // kCFBooleanTrue/False are CFBoolean and must be rejected.
+        XCTAssertNil(strictDouble(kCFBooleanTrue))
+        XCTAssertNil(strictDouble(kCFBooleanFalse))
         XCTAssertEqual(strictDouble(1.0), 1.0)
     }
 
@@ -416,5 +420,35 @@ final class StrictNumberTests: XCTestCase {
                                 focused: nil, frame: nil, actions: ["AXPress"])
         XCTAssertFalse(CandidateSelection.isEligible(
             e, screens: [CGRect(x: 0, y: 0, width: 1440, height: 900)]))
+    }
+}
+
+/// The re-validation found a parser bug of mine: `v is Bool` is true for the
+/// JSON integers 0 and 1, so strictDouble rejected every legitimate integer
+/// probability. The discriminator must be CFBooleanGetTypeID alone.
+final class StrictNumberJSONTests: XCTestCase {
+    private func parsed(_ s: String) -> Any {
+        try! JSONSerialization.jsonObject(with: Data(s.utf8))
+    }
+
+    func testJSONIntegersAreAccepted() {
+        let o = parsed(#"{"a":0,"b":1}"#) as! [String: Any]
+        XCTAssertEqual(strictDouble(o["a"]!), 0.0)
+        XCTAssertEqual(strictDouble(o["b"]!), 1.0)
+    }
+
+    func testJSONBooleansAreRejected() {
+        let o = parsed(#"{"a":false,"b":true}"#) as! [String: Any]
+        XCTAssertNil(strictDouble(o["a"]!))
+        XCTAssertNil(strictDouble(o["b"]!))
+    }
+
+    func testZeroProbabilitySurvivesEndToEndValidation() {
+        // A zero probability is extremely common and must not read as invalid.
+        let json: [String: Any] = ["type": "choice", "choice": "e01", "confidence": 0.7,
+                                   "probabilities": ["e00": 0.0, "e01": 1.0]]
+        let a = try! ChoiceAnswer(question: "t", json: json)
+        XCTAssertNoThrow(try a.validate(expectedKeys: ["e00", "e01"]))
+        XCTAssertEqual(a.pMax, 1.0)
     }
 }
