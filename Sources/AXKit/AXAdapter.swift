@@ -131,19 +131,31 @@ public final class AXAdapter: AXBackend, @unchecked Sendable {
         var collected: [CapturedElement] = []
         var diag = SnapshotDiagnostics()
         var partial = false
-        // Cycle guard (SPEC 8.2): the AX tree is not guaranteed acyclic. A
-        // self-referential subtree recursed until the node cap, yielding 6000
-        // nodes with 27-level duplicate paths instead of the 510 real ones.
-        // CFHash is the correct CFType identity hash for AXUIElement.
-        var visited = Set<CFHashCode>()
+        // Cycle guard (SPEC 8.2): the AX tree is not guaranteed acyclic, and a
+        // self-referential subtree recursed to the node cap -- 6000 nodes with
+        // 27-level duplicate paths instead of the 339 real elements.
+        //
+        // EQUALITY-AWARE, not hash-only (Codex B6). A hash set alone can collide
+        // and silently skip a genuinely different element, which loses nodes;
+        // that marks the snapshot partial. A true repeat is not a loss -- it is
+        // the same element appearing twice -- so it only stops the branch.
+        var seenHashes: [CFHashCode: AXUIElement] = [:]
 
         func walk(_ e: AXUIElement, path: [Int], depth: Int) {
             guard collected.count < Self.maxNodes else { diag.limit += 1; partial = true; return }
             guard depth <= Self.maxDepth else { diag.cycleGuard += 1; partial = true; return }
             let h = CFHash(e)
-            guard visited.insert(h).inserted else {
-                diag.cycleGuard += 1; return          // already walked this element
+            if let prior = seenHashes[h] {
+                if CFEqual(prior, e) {
+                    diag.cycleGuard += 1          // same element: stop, nothing lost
+                    return
+                }
+                // Hash collision with a DIFFERENT element: distinguishing them
+                // is required, so a duplicate sibling in the enumeration is
+                // dropped and the snapshot becomes partial.
+                diag.cycleGuard += 1; partial = true
             }
+            seenHashes[h] = e
 
             let role = stringAttr(e, kAXRoleAttribute as String) ?? "?"
             let subrole = stringAttr(e, kAXSubroleAttribute as String)
@@ -264,8 +276,23 @@ public final class AXAdapter: AXBackend, @unchecked Sendable {
         }
     }
 
-    public func dispatch(_ primitive: Primitive, on element: CapturedElement,
-                         arguments: String?) throws -> Outcome {
+    /// MUTATION IS DISABLED. A public `dispatch` reachable from the library
+    /// bypassed approval consumption, the §6.3 preconditions and the §6.4
+    /// effect predicate, and returned `.applied` on an unverified AX success.
+    /// Codex reproduced a reachable `decision: act` through it.
+    ///
+    /// It stays `internal` rather than deleted so the actuator can be wired to
+    /// the real approval record when `apply` exists. Until then it refuses.
+    internal func dispatch(_ primitive: Primitive, on element: CapturedElement,
+                           arguments: String?) throws -> Outcome {
+        throw AXBackendError.mutationDisabled(
+            "apply is not implemented: no approval record, no preflight, no "
+            + "effect predicate, so no AX mutation is permitted")
+    }
+
+    /// The real implementation, deliberately unreachable while B1 stands.
+    private func performUnverified(_ primitive: Primitive, on element: CapturedElement,
+                                   arguments: String?) throws -> Outcome {
         guard let live = elementFor(element.path) else {
             throw AXBackendError.readFailed("no live handle for \(element.path)")
         }

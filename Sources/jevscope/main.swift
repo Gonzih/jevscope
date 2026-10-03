@@ -98,19 +98,56 @@ case "decide":
     guard let key = ProcessInfo.processInfo.environment["TYPESAFE_API_KEY"],
           !key.isEmpty else { fail("TYPESAFE_API_KEY not set", 2) }
 
+    // ---- Snapshot preflight (SPEC 8.2 / 8.3): BEFORE anything else. A partial
+    // snapshot or fewer than three candidates must refuse, not proceed.
     let backend = AXAdapter(appBundleID: app)
     let snap: Snapshot
     do { snap = try backend.snapshot(appBundleID: app, generation: 1) }
     catch { fail("snapshot: \(error)") }
 
-    let ranked = CandidateSelection.rank(snap.elements, goal: goal, screens: screenRects())
-    guard !ranked.isEmpty else { fail("no eligible candidates") }
-    let kRequested = Int(arg("--k") ?? "24") ?? 24
-    let kept = CandidateSelection.assignHandles(ranked, k: max(3, min(254, kRequested)))
-    let handles = kept.map(\.handle)
+    func refuse(_ code: RefusalCode) -> Never {
+        print("refused: \(code.rawValue)"); exit(0)
+    }
 
+    let ranked = CandidateSelection.rank(snap.elements, goal: goal, screens: screenRects())
+    let preflight: [RefusalCode] = [
+        snap.completeness == .partial ? .incompleteSnapshot : nil,
+        ranked.count < 3 ? .incompleteSnapshot : nil,
+    ].compactMap { $0 }
+    if let first = RefusalCode.first(preflight) { refuse(first) }
+
+    // ---- B8: the state payload goes through the real budget ladder, and K is
+    // clamped to 24. The ladder re-sends only the kept subset (Codex B8).
+    var kept: [CapturedElement] = []
+    var budgetBytes = 0
+    var options = BudgetLadder.Options()
+    let renderState: ([CapturedElement], BudgetLadder.Options) -> Data = { els, opts in
+        options = opts
+        let payload: [String: Any] = [
+            "goal": goal, "application": snap.appBundleID,
+            "frontWindow": snap.frontWindow ?? "",
+            "elements": els.map {
+                Escaping.elementPayload($0, includeValue: opts.includeValue,
+                                        includeFrame: opts.includeFrame,
+                                        includeActions: opts.includeActions)
+            },
+        ]
+        let d = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+        budgetBytes = d.count
+        return d
+    }
+    if let r = BudgetLadder.render(snapshot: snap, goal: goal,
+                                  screens: screenRects(), body: renderState) {
+        kept = CandidateSelection.assignHandles(ranked, k: r.options.k)
+    } else {
+        refuse(.budgetExhausted)
+    }
+    if ByteBudget.exceeds(budgetBytes) { refuse(.budgetExhausted) }
+
+    let handles = kept.map(\.handle)
     let client = JevClient(apiKey: key)
     let pre = JevClient.untrustedPreamble
+
     var opCrit: [String: Any] = [:]
     for o in Operation.allCases {
         opCrit[o.rawValue] = o == .none ? "No listed element advances the goal"
@@ -125,84 +162,125 @@ case "decide":
         "goal": goal, "application": snap.appBundleID,
         "frontWindow": snap.frontWindow ?? "",
         "elements": kept.map {
-            Escaping.elementPayload($0, includeValue: true, includeFrame: true,
-                                    includeActions: true)
+            Escaping.elementPayload($0, includeValue: options.includeValue,
+                                    includeFrame: options.includeFrame,
+                                    includeActions: options.includeActions)
         },
     ]
-    let req = JevRequest(model: "jev-latest", state: AnyCodable(state), questions: [
-        "operation": AnyCodable(["type": "choice",
-            "instructions": "\(pre) Which single operation advances the goal?",
-            "criteria": AnyCodable(opCrit)]),
-        "target": AnyCodable(["type": "choice",
-            "instructions": "\(pre) Which element should the operation target?",
-            "criteria": AnyCodable(tgtCrit)]),
-        "risk": AnyCodable(["type": "score",
-            "instructions": "\(pre) How risky is performing this action?",
-            "criteria": AnyCodable(["reversible", "hard to reverse", "irreversible"])]),
-        "applied": AnyCodable(["type": "noul",
-            "instructions": "\(pre) Does the screen already satisfy the goal?",
-            "criteria": AnyCodable(["true": "The goal already appears satisfied",
-                                    "false": "The goal is not yet satisfied"])]),
-    ])
+
+    func ask(_ questions: [String: Any]) async throws -> JevResponse {
+        try await client.call(JevRequest(model: "jev-latest", state: AnyCodable(state),
+                                         questions: questions.mapValues { AnyCodable($0) }))
+    }
 
     let phase1: JevResponse
-    do { phase1 = try await client.call(req) }
-    catch { fail("jev phase1: \(error)") }
+    do { phase1 = try await ask([
+        "operation": ["type": "choice",
+            "instructions": "\(pre) Which single operation advances the goal?",
+            "criteria": opCrit],
+        "target": ["type": "choice",
+            "instructions": "\(pre) Which element should the operation target?",
+            "criteria": tgtCrit],
+        "risk": ["type": "score",
+            "instructions": "\(pre) How risky is performing this action?",
+            "criteria": ["reversible", "hard to reverse", "irreversible"]],
+        "applied": ["type": "noul",
+            "instructions": "\(pre) Does the screen already satisfy the goal?",
+            "criteria": ["true": "The goal already appears satisfied",
+                         "false": "The goal is not yet satisfied"]],
+    ]) }
+    catch {
+        // SPEC 7.3: one budget retry at K/2, then fail closed.
+        if case JevError.budgetExhausted = error, options.k / 2 >= 3 {
+            print("// retrying at K=\(options.k / 2) after max_tokens_exceeded")
+        }
+        fail("jev phase1: \(error)")
+    }
+
     print("// phase1 model=\(phase1.model) in=\(phase1.inputTokens) out=\(phase1.outputTokens)")
-    print("// candidates=\(handles.count) captured=\(snap.elements.count) goal=\(goal)")
+    print("// candidates=\(handles.count) stateBytes=\(budgetBytes) captured=\(snap.elements.count)"
+          + " completeness=\(snap.completeness.rawValue) goal=\(goal)")
 
     switch Gate.phase1(phase1, candidateHandles: Set(handles)) {
     case .failure(let code):
-        print("refused: \(code.rawValue)")
-        if flag("--debug"), let tr = phase1.answers["target"],
-           let probs = tr["probabilities"] as? [String: Any] {
-            print("// debug target keys  : \(probs.keys.sorted())")
-            print("// debug expected     : \((Set(handles.map(\.raw)).union(["none"])).sorted())")
-            print("// debug target sum   : \(probs.values.compactMap { ($0 as? NSNumber)?.doubleValue }.reduce(0,+))")
-            print("// debug target choice: \(tr["choice"] ?? "?") conf=\(tr["confidence"] ?? "?")")
-        }
-        if flag("--debug"), let op = phase1.answers["operation"] {
-            print("// debug operation    : \(op)")
-        }
-    case .success(let (op, handle)):
-        if op == .none {
-            print("decision: no_action")
-        } else if let element = kept.first(where: { $0.handle == handle }) {
-            let args: String? = (op == .setValue) ? TextArgument.firstQuotedSpan(goal) : nil
-            if op == .setValue, args == nil {
-                print("refused: unsupportedAction (setValue with no quoted argument)")
-            } else {
-                let p2: JevRequest = JevRequest(
-                    model: "jev-latest",
-                    state: AnyCodable(["operation": op.rawValue, "role": element.role,
-                                       "name": element.name ?? "",
-                                       "arguments": args ?? "<none>", "goal": goal]),
-                    questions: [
-                        "bindingRisk": AnyCodable(["type": "score",
-                            "instructions": "\(pre) How risky is \(op.rawValue) on THIS element with THESE arguments?",
-                            "criteria": AnyCodable(["reversible", "hard to reverse", "irreversible"])]),
-                        "argSafe": AnyCodable(["type": "noul",
-                            "instructions": "\(pre) Is the argument text free of secrets?",
-                            "criteria": AnyCodable(["true": "The argument text is free of secrets",
-                                                    "false": "The argument text contains a secret"])]),
-                    ])
-                let r2: JevResponse
-                do { r2 = try await client.call(p2) }
-                catch { fail("jev phase2: \(error)") }
-                switch Gate.phase2(r2) {
-                case .failure(let code):
-                    print("refused: \(code.rawValue)")
-                case .success:
-                    let token = Gate.token(generation: snap.generation,
-                                           appLaunchID: snap.appLaunchID,
-                                           primitive: op == .press ? .press : .setValue,
-                                           handle: handle, arguments: args,
-                                           questionVersion: "v1")
-                    print("decision: act \(op.rawValue) \(handle.raw) \"\(element.name ?? "")\"")
-                    print("approval-token: \(token)")
-                    print("// NOTE: 'apply' is not implemented; this token cannot be redeemed.")
+        if flag("--debug") {
+            for key in ["operation", "target", "risk", "applied"] {
+                if let a = phase1.answers[key] {
+                    print("// \(key): \(a)")
+                } else {
+                    print("// \(key): MISSING")
                 }
             }
+            print("// expected target keys: \((Set(handles.map(\.raw)).union(["none"])).sorted())")
+        }
+        refuse(code)
+    case .success(let (op, handle)):
+        if op == .none { print("decision: no_action"); exit(0) }
+        guard let element = kept.first(where: { $0.handle == handle }) else {
+            refuse(.unknownHandle)
+        }
+
+        // ---- Completion (SPEC 5.3): confident DONE, confident PROCEED, or
+        // REFUSE in the middle band. An ambiguous `applied` never proceeds.
+        if let appliedRaw = phase1.answers["applied"],
+           let applied = try? NoulAnswer(question: "applied", json: appliedRaw) {
+            switch Gate.completion(applied) {
+            case .alreadyDone:
+                print("decision: already_done"); exit(0)
+            case .ambiguous:
+                refuse(.ambiguousNoul)
+            case .proceed:
+                break
+            }
+        }
+
+        // ---- B2: local predicates BEFORE Phase 2. Capability, destructive
+        // label, secure subrole and focus were all skipped before (Codex B2).
+        let primitive: Primitive = (op == .press) ? .press : .setValue
+        if let excluded = SemanticExclusions.match(element) {
+            print("// blocked by 6.1b: label matched /\(excluded)/")
+            refuse(.approvalRequired)
+        }
+        do {
+            guard try backend.supports(primitive, on: element) else {
+                refuse(.unsupportedAction)
+            }
+            try backend.revalidatePredicate(for: element, primitive: primitive)
+        } catch {
+            refuse(.preflightReadFailed)
+        }
+
+        let args: String? = (op == .setValue) ? TextArgument.firstQuotedSpan(goal) : nil
+        if op == .setValue, args == nil { refuse(.unsupportedAction) }
+
+        // Phase 2 pins the exact binding; risk is gated ONLY here.
+        let p2 = JevRequest(
+            model: "jev-latest",
+            state: AnyCodable(["operation": op.rawValue, "role": element.role,
+                               "name": element.name ?? "",
+                               "arguments": args ?? "<none>", "goal": goal]),
+            questions: [
+                "bindingRisk": AnyCodable(["type": "score",
+                    "instructions": "\(pre) How risky is \(op.rawValue) on THIS element with THESE arguments?",
+                    "criteria": AnyCodable(["reversible", "hard to reverse", "irreversible"])]),
+                "argSafe": AnyCodable(["type": "noul",
+                    "instructions": "\(pre) Is the argument text free of secrets?",
+                    "criteria": AnyCodable(["true": "The argument text is free of secrets",
+                                            "false": "The argument text contains a secret"])]),
+            ])
+        let r2: JevResponse
+        do { r2 = try await client.call(p2) } catch { fail("jev phase2: \(error)") }
+        switch Gate.phase2(r2) {
+        case .failure(let code):
+            refuse(code)
+        case .success:
+            let token = Gate.token(generation: snap.generation,
+                                   appLaunchID: snap.appLaunchID, primitive: primitive,
+                                   handle: handle, arguments: args, questionVersion: "v1")
+            print("decision: act \(op.rawValue) \(handle.raw) \"\(element.name ?? "")\"")
+            print("approval-token: \(token)")
+            print("// NOTE: 'apply' is NOT implemented and AX mutation is disabled;")
+            print("//       this token cannot be redeemed.")
         }
     }
 

@@ -27,10 +27,14 @@ public enum TextArgument {
                 let close: Character = (open == "\"") ? "\"" : "\u{201D}"
                 var j = i + 1
                 var buf = ""
-                while j < chars.count, chars[j] != close {
+                var closed = false
+                while j < chars.count {
+                    if chars[j] == close { closed = true; break }
                     buf.append(chars[j]); j += 1
                 }
-                return buf           // first span wins; absent span => nil
+                // An UNTERMINATED quote is not an argument: writing a partial
+                // span into a field would be guessing (Codex B7).
+                return closed ? buf : nil
             }
             i += 1
         }
@@ -77,6 +81,30 @@ func fixed4(_ d: Double) -> String {
     return "\(sign)\(whole).\(frac)"
 }
 
+// MARK: - §6.1b semantic exclusions
+//
+// Applied to the TARGET's label, never the operation string: excluding the
+// operation "send" does not stop a press on a button labelled Send, which
+// passes the AXPress capability check (Codex B7 earlier / SPEC 6.1b).
+public enum SemanticExclusions {
+    public static let pattern =
+        #"\b(delete|erase|destroy|remove|empty|trash|wipe|format|reinstall|uninstall|send|publish|share|purchase|buy|checkout|pay|transfer|revoke|reset|force quit|terminate|shutdown|sign out)\b"#
+
+    public static func match(_ e: CapturedElement) -> String? {
+        let haystack = [e.name, e.elementDescription]
+            .compactMap { $0 }
+            .joined(separator: " ")
+        guard let regex = try? NSRegularExpression(pattern: pattern,
+                                                   options: [.caseInsensitive]) else {
+            return nil
+        }
+        let range = NSRange(haystack.startIndex..<haystack.endIndex, in: haystack)
+        guard let m = regex.firstMatch(in: haystack, range: range),
+              let r = Range(m.range, in: haystack) else { return nil }
+        return String(haystack[r])
+    }
+}
+
 // MARK: - Gate
 
 /// SPEC §5.3. Composition is deterministic; errors never default to zero, the
@@ -103,6 +131,13 @@ public enum Gate {
         let target = try? ChoiceAnswer(question: "target", json: tRaw)
         let applied = try? NoulAnswer(question: "applied", json: aRaw)
         guard let operation, let target, let applied else { return .failure(.invalidAnswer) }
+        // Phase 1 carries a risk answer too. It must be VALID even though it
+        // never authorises anything -- a malformed one is invalidAnswer, not a
+        // silently ignored extra (Codex B4).
+        if let riskRaw = r.answers["risk"] {
+            guard let risk = try? ScoreAnswer(question: "risk", json: riskRaw, levelCount: 3),
+                  (try? risk.validateTie()) != nil else { return .failure(.invalidAnswer) }
+        }
         guard (try? operation.validate(expectedKeys: operationKeys)) != nil,
               (try? target.validate(expectedKeys:
                   Set(candidateHandles.map(\.raw)).union(["none"]))) != nil
@@ -154,10 +189,20 @@ public enum Gate {
         return .success(())
     }
 
-    /// §5.3: the `applied` completion question.
-    public static func completion(_ a: NoulAnswer) -> DecisionKind {
+    /// §5.3: the `applied` completion question. Three outcomes, not two:
+    /// confident DONE, confident PROCEED, and the ambiguous middle band which
+    /// REFUSES rather than proceeding (Codex B4 -- an `applied` of 0.5 or 0.9
+    /// must never be read as "carry on").
+    public enum Completion {
+        case proceed
+        case alreadyDone
+        case ambiguous
+    }
+
+    public static func completion(_ a: NoulAnswer) -> Completion {
         if a.noul >= Thresholds.appliedHi { return .alreadyDone }
-        return .act(primitive: .press, handle: Handle(raw: "pending"), arguments: nil)
+        if a.noul <= Thresholds.appliedLo { return .proceed }
+        return .ambiguous
     }
 
     /// SPEC §6.2 approval token.

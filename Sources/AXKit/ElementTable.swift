@@ -45,12 +45,12 @@ public enum CandidateSelection {
         guard !e.actions.isEmpty else { return false }
         guard e.enabled == .enabled else { return false }
         guard !e.isAppKitSynthetic else { return false }
-        if let f = e.frame {
-            guard f.width > 0, f.height > 0 else { return false }
-            let r = CGRect(x: f.x, y: f.y, width: f.width, height: f.height)
-            guard screens.contains(where: { $0.intersects(r) }) else { return false }
-        }
-        return true
+        // A MISSING frame is not eligible: without geometry we cannot prove
+        // the control is on screen, and assuming so is fail-open (Codex B3).
+        guard let f = e.frame else { return false }
+        guard f.width > 0, f.height > 0 else { return false }
+        let r = CGRect(x: f.x, y: f.y, width: f.width, height: f.height)
+        return screens.contains { $0.intersects(r) }
     }
 
     /// SPEC §7.2 score. Ties break on (name, path) ascending, so ordering is
@@ -206,7 +206,7 @@ public enum BudgetLadder {
                               body: ([CapturedElement], Options) -> Data) -> Rendered? {
         var options = Options()
         let ranked = CandidateSelection.rank(snapshot.elements, goal: goal, screens: screens)
-        options.k = min(24, max(kFloor, min(kCeiling, ranked.count)))
+        options.k = min(Thresholds.maxCandidates, max(kFloor, min(kCeiling, ranked.count)))
         for _ in 0..<8 {
             let kept = CandidateSelection.assignHandles(ranked, k: options.k)
             let data = body(kept, options)

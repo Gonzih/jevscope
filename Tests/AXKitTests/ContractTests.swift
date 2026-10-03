@@ -342,3 +342,79 @@ final class ContractTests: XCTestCase {
                           "a subrole change must invalidate the binding")
     }
 }
+/// Codex B5: strict numeric handling. A JSON boolean bridges to NSNumber and
+/// would otherwise pass a range check as 1.0/0.0.
+final class StrictNumberTests: XCTestCase {
+    func testBooleanIsRejectedWhereANumberIsRequired() {
+        // Swift Bool must never read as 1.0/0.0.
+        XCTAssertNil(strictDouble(true))
+        XCTAssertNil(strictDouble(false))
+        // NB: NSNumber(value: 0) can itself carry a CFBoolean type, so it is
+        // correctly rejected. Real JSON integers arrive as __NSCFNumber.
+        XCTAssertNil(strictDouble(NSNumber(value: 0)))
+        XCTAssertEqual(strictDouble(NSNumber(value: 1.5)), 1.5)
+        XCTAssertEqual(strictDouble(NSNumber(value: 3)), 3.0)
+        XCTAssertEqual(strictDouble(0.0), 0.0)
+        XCTAssertEqual(strictDouble(1.0), 1.0)
+    }
+
+    func testChoiceRejectsBooleanProbability() {
+        let json: [String: Any] = ["type": "choice", "choice": "e00", "confidence": 0.9,
+                                   "probabilities": ["e00": true, "e01": false]]
+        XCTAssertThrowsError(try ChoiceAnswer(question: "t", json: json))
+    }
+
+    func testChoiceRejectsOutOfRangeConfidence() {
+        for bad in [1.5, -0.1, NSNull()] {
+            let json: [String: Any] = ["type": "choice", "choice": "e00",
+                                       "confidence": bad,
+                                       "probabilities": ["e00": 1.0]]
+            XCTAssertThrowsError(try ChoiceAnswer(question: "t", json: json),
+                                 "confidence \(bad) must be rejected")
+        }
+    }
+
+    func testScoreRejectsNonCanonicalIndexKeys() {
+        for badKey in ["00", "1.0", "-0", " 1"] {
+            let json: [String: Any] = ["type": "score", "score": 0.5, "confidence": 0.9,
+                                       "probabilities": [badKey: 0.5, "1": 0.5]]
+            XCTAssertThrowsError(try ScoreAnswer(question: "r", json: json, levelCount: 2),
+                                 "key '\(badKey)' must be rejected")
+        }
+    }
+
+    func testUnterminatedQuoteYieldsNoArgument() {
+        // B7: an unclosed quote is not an argument; writing it would guess.
+        XCTAssertNil(TextArgument.firstQuotedSpan(#"set field to "unterminated"#))
+        XCTAssertEqual(TextArgument.firstQuotedSpan(#"set field to "cats""#), "cats")
+    }
+
+    func testDestructiveLabelIsExcludedRegardlessOfOperation() {
+        var e = CapturedElement(handle: Handle(index: 0), path: "/0", role: "AXButton",
+                                subrole: nil, identifier: nil, title: "Delete",
+                                elementDescription: nil, value: nil, enabled: .enabled,
+                                focused: nil, frame: nil, actions: ["AXPress"])
+        XCTAssertNotNil(SemanticExclusions.match(e), "a Delete button is excluded")
+        e.title = "Archive"
+        XCTAssertNil(SemanticExclusions.match(e), "a benign label is not")
+    }
+
+    func testCompletionAmbiguityRefusesRatherThanProceeds() {
+        let mid = try! NoulAnswer(question: "a", json: ["type": "noul", "noul": 0.5])
+        if case .ambiguous = Gate.completion(mid) {} else { XCTFail("0.5 must be ambiguous") }
+        let high = try! NoulAnswer(question: "a", json: ["type": "noul", "noul": 0.9])
+        if case .alreadyDone = Gate.completion(high) {} else { XCTFail("0.9 must be done") }
+        let low = try! NoulAnswer(question: "a", json: ["type": "noul", "noul": 0.1])
+        if case .proceed = Gate.completion(low) {} else { XCTFail("0.1 must proceed") }
+    }
+
+    func testNilFrameIsNotEligible() {
+        // B3: without geometry we cannot prove the control is on screen.
+        let e = CapturedElement(handle: Handle(index: 0), path: "/0", role: "AXButton",
+                                subrole: nil, identifier: nil, title: "Archive",
+                                elementDescription: nil, value: nil, enabled: .enabled,
+                                focused: nil, frame: nil, actions: ["AXPress"])
+        XCTAssertFalse(CandidateSelection.isEligible(
+            e, screens: [CGRect(x: 0, y: 0, width: 1440, height: 900)]))
+    }
+}

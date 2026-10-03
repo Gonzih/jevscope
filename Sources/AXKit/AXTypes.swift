@@ -251,8 +251,10 @@ public protocol AXBackend: Sendable {
     func supports(_ primitive: Primitive, on element: CapturedElement) throws -> Bool
     /// SPEC §6.3: live re-check of the §6.1b decision predicate.
     func revalidatePredicate(for element: CapturedElement, primitive: Primitive) throws
-    func dispatch(_ primitive: Primitive, on element: CapturedElement,
-                  arguments: String?) throws -> Outcome
+    // NOTE: there is deliberately NO dispatch member. Exposing mutation on a
+    // public protocol made an ungated AX write reachable from the library
+    // (Codex B1). Mutation returns through a separate, internal seam once
+    // approval, preflight and the effect predicate exist.
 }
 
 /// Errors the backend may raise; mapped to refusal codes by the caller.
@@ -264,4 +266,6 @@ public enum AXBackendError: Error, Sendable {
     case unsupported(String)
     /// The action was dispatched; the outcome is unknown. NEVER a refusal.
     case dispatchedUnknownOutcome(String)
+    /// Any AX mutation attempted before `apply` exists.
+    case mutationDisabled(String)
 }

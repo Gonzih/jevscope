@@ -35,6 +35,22 @@ public struct JevRequest: @unchecked Sendable {
 
 /// Minimal JSON value wrapper so mixed-type payloads (Choice criteria are a map,
 /// Score criteria are an array) survive encoding.
+/// Strict number reader. `(v as? NSNumber)` happily converts a JSON boolean to
+/// 1.0/0.0, so a `true` in a numeric field would pass a range check (Codex B5).
+func strictDouble(_ v: Any) -> Double? {
+    if v is Bool { return nil }          // CFBoolean bridges to NSNumber
+    if let n = v as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() {
+        return n.doubleValue
+    }
+    return nil
+}
+
+/// JSON object keys are only canonical decimal integers when they round-trip.
+func canonicalIndex(_ k: String) -> Int? {
+    guard let i = Int(k), String(i) == k, i >= 0 else { return nil }
+    return i
+}
+
 public struct AnyCodable: Codable, @unchecked Sendable {
     public let value: Any
     public init(_ v: Any) { self.value = v }
@@ -124,13 +140,18 @@ public struct ChoiceAnswer: Sendable {
             throw AnswerError.wrongType(question)
         }
         guard let probs = json["probabilities"] as? [String: Any],
-              let conf = (json["confidence"] as? NSNumber)?.doubleValue,
               let choice = json["choice"] as? String else {
             throw AnswerError.missingQuestion(question)
         }
+        guard let conf = strictDouble(json["confidence"] ?? NSNull()),
+              conf.isFinite, conf >= 0, conf <= 1 else {
+            // An absent, boolean or out-of-range confidence is an error, never
+            // a silent pass (Codex B5).
+            throw AnswerError.outOfRange("\(question).confidence")
+        }
         var p: [String: Double] = [:]
         for (k, v) in probs {
-            guard let d = (v as? NSNumber)?.doubleValue else {
+            guard let d = strictDouble(v) else {
                 throw AnswerError.outOfRange("\(question).\(k)")
             }
             guard d.isFinite, d >= 0, d <= 1 else {
@@ -174,9 +195,9 @@ public struct ScoreAnswer: Sendable {
         guard let raw = json["type"] as? String, raw == "score" else {
             throw AnswerError.wrongType(question)
         }
-        guard let s = (json["score"] as? NSNumber)?.doubleValue,
-              let c = (json["confidence"] as? NSNumber)?.doubleValue,
-              let probs = json["probabilities"] as? [String: Any] else {
+        guard let probs = json["probabilities"] as? [String: Any],
+              let s = strictDouble(json["score"] ?? NSNull()),
+              let c = strictDouble(json["confidence"] ?? NSNull()) else {
             throw AnswerError.missingQuestion(question)
         }
         guard s.isFinite, s >= 0, s <= Double(levelCount - 1) else {
@@ -185,7 +206,8 @@ public struct ScoreAnswer: Sendable {
         guard c.isFinite, c >= 0, c <= 1 else { throw AnswerError.outOfRange("\(question).confidence") }
         var p: [Int: Double] = [:]
         for (k, v) in probs {
-            guard let idx = Int(k), let d = (v as? NSNumber)?.doubleValue,
+            // Canonical decimal keys only: "0", "1" -- not "00", "1.0", "-0".
+            guard let idx = canonicalIndex(k), let d = strictDouble(v),
                   d.isFinite, d >= 0, d <= 1 else { throw AnswerError.outOfRange("\(question).\(k)") }
             p[idx] = d
         }
@@ -213,7 +235,8 @@ public struct NoulAnswer: Sendable {
         guard let raw = json["type"] as? String, raw == "noul" else {
             throw AnswerError.wrongType(question)
         }
-        guard let n = (json["noul"] as? NSNumber)?.doubleValue, n.isFinite, n >= 0, n <= 1 else {
+        guard let n = strictDouble(json["noul"] ?? NSNull()),
+              n.isFinite, n >= 0, n <= 1 else {
             throw AnswerError.outOfRange("\(question).noul")
         }
         self.noul = n
@@ -235,6 +258,8 @@ public enum Thresholds {
     public static let argSafeMinimum = 0.80
     public static let appliedHi = 0.80
     public static let appliedLo = 0.20
+    /// SPEC §7.3: v1 clamps K to 24 regardless of the 254 protocol ceiling.
+    public static let maxCandidates = 24
 
     /// Fingerprint of the active policy, recorded in every trace so a policy
     /// change invalidates outstanding approvals (SPEC §6.2).
