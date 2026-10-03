@@ -131,10 +131,19 @@ public final class AXAdapter: AXBackend, @unchecked Sendable {
         var collected: [CapturedElement] = []
         var diag = SnapshotDiagnostics()
         var partial = false
+        // Cycle guard (SPEC 8.2): the AX tree is not guaranteed acyclic. A
+        // self-referential subtree recursed until the node cap, yielding 6000
+        // nodes with 27-level duplicate paths instead of the 510 real ones.
+        // CFHash is the correct CFType identity hash for AXUIElement.
+        var visited = Set<CFHashCode>()
 
         func walk(_ e: AXUIElement, path: [Int], depth: Int) {
             guard collected.count < Self.maxNodes else { diag.limit += 1; partial = true; return }
             guard depth <= Self.maxDepth else { diag.cycleGuard += 1; partial = true; return }
+            let h = CFHash(e)
+            guard visited.insert(h).inserted else {
+                diag.cycleGuard += 1; return          // already walked this element
+            }
 
             let role = stringAttr(e, kAXRoleAttribute as String) ?? "?"
             let subrole = stringAttr(e, kAXSubroleAttribute as String)

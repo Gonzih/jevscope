@@ -7,7 +7,12 @@ import Foundation
 public struct Handle: Hashable, Sendable, Codable, CustomStringConvertible {
     public let raw: String
     public init(raw: String) { self.raw = raw }
-    public init(index: Int) { self.raw = String(format: "e%02d", index) }
+    public init(index: Int) {
+        let n = abs(index)
+        var s = String(n)
+        while s.count < 2 { s = "0" + s }
+        self.raw = "e" + s
+    }
     public var description: String { raw }
 }
 
@@ -155,7 +160,7 @@ public struct Snapshot: Sendable, Codable {
 // MARK: - Refusals and outcomes
 
 /// SPEC §8.3 precedence order. The first match in this order is reported.
-public enum RefusalCode: String, Sendable, Codable, CaseIterable {
+public enum RefusalCode: String, Sendable, Codable, CaseIterable, Error {
     case budgetExhausted
     case axUnavailable
     case incompleteSnapshot
