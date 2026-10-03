@@ -36,7 +36,10 @@ public enum CandidateSelection {
     /// SPEC §7.1 eligibility. An element with `enabled == .unknown` is
     /// DROPPED, never coerced — failing open would admit controls that may be
     /// disabled; failing closed silently would distort the corpus.
-    public static func isEligible(_ e: CapturedElement, onScreen: Set<String>) -> Bool {
+    /// The frame test is an INTERSECTION, not equality: a control may sit
+    /// partly offscreen and still be visible. (An exact key lookup rejected
+    /// every element in a live TextEdit tree — 470 captured, 0 eligible.)
+    public static func isEligible(_ e: CapturedElement, screens: [CGRect]) -> Bool {
         guard let name = e.name, name.count >= 3 else { return false }
         guard !name.hasPrefix("."), !name.hasPrefix("AX") else { return false }
         guard !e.actions.isEmpty else { return false }
@@ -44,8 +47,8 @@ public enum CandidateSelection {
         guard !e.isAppKitSynthetic else { return false }
         if let f = e.frame {
             guard f.width > 0, f.height > 0 else { return false }
-            let key = "\(f.x),\(f.y),\(f.width)x\(f.height)"
-            guard onScreen.contains(key) else { return false }
+            let r = CGRect(x: f.x, y: f.y, width: f.width, height: f.height)
+            guard screens.contains(where: { $0.intersects(r) }) else { return false }
         }
         return true
     }
@@ -66,9 +69,9 @@ public enum CandidateSelection {
 
     /// SPEC §7.2: rank, then assign handles from the ranked order.
     public static func rank(_ elements: [CapturedElement], goal: String,
-                            onScreen: Set<String>) -> [CapturedElement] {
+                            screens: [CGRect]) -> [CapturedElement] {
         let terms = goalTerms(goal)
-        let eligible = elements.filter { isEligible($0, onScreen: onScreen) }
+        let eligible = elements.filter { isEligible($0, screens: screens) }
         let scored = eligible.map { ($0, score($0, terms: terms)) }
         let sorted = scored.sorted { a, b in
             if a.1 != b.1 { return a.1 > b.1 }
@@ -199,14 +202,14 @@ public enum BudgetLadder {
     public static let kCeiling = 254  // one Choice slot reserved for `none`
 
     public static func render(snapshot: Snapshot, goal: String,
-                              onScreen: Set<String>, body: (Options) -> Data)
-        -> Rendered? {
+                              screens: [CGRect],
+                              body: ([CapturedElement], Options) -> Data) -> Rendered? {
         var options = Options()
-        options.k = min(24, max(kFloor, min(kCeiling, snapshot.elements.count)))
-        let ranked = CandidateSelection.rank(snapshot.elements, goal: goal, onScreen: onScreen)
+        let ranked = CandidateSelection.rank(snapshot.elements, goal: goal, screens: screens)
+        options.k = min(24, max(kFloor, min(kCeiling, ranked.count)))
         for _ in 0..<8 {
             let kept = CandidateSelection.assignHandles(ranked, k: options.k)
-            let data = body(options)
+            let data = body(kept, options)
             if !ByteBudget.exceeds(data.count) {
                 let table = kept.map {
                     Escaping.line($0, includeValue: options.includeValue,
