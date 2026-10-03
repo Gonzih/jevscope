@@ -314,6 +314,9 @@ refused     if the target matches the §6.1b semantic exclusion
                                                     -> approvalRequired
 refused     if setValue was selected but the goal has no quoted argument
                                                     -> unsupportedAction
+refused     if setValue targets an element reporting kAXFocusedAttribute == true
+            (AX cannot identify secure fields; see §6.1b)
+                                                    -> approvalRequired
 
 PHASE 2 (binding confirmation; only reached if Phase 1 selects)
 refused     unless bindingRisk.score <= 0.20 AND bindingRisk.confidence >= 0.85
@@ -441,8 +444,23 @@ against its `name` and `description`:
 ```
 
 Match against the label with word boundaries, after the §7.4 escaping. Roles
-additionally excluded regardless of label: `AXMenuItem` inside a menu whose
-title matches the regex; `AXSecureTextField` always.
+additionally excluded regardless of label: an `AXMenuItem` inside a menu whose
+title matches the regex.
+
+> **Correction.** v3 also excluded "`AXSecureTextField` always". **That role
+> does not exist.** Neither `kAXSecureTextFieldRole` nor
+> `NSAccessibilityIsSecureTextFieldAttribute` is declared in the macOS 27 SDK,
+> and `NSSecureTextField.accessibilityRole()` reports the same `AXTextField`
+> role as `NSTextField` (`evidence/ax-secure-text-field.md`).
+>
+> So **AX cannot distinguish a password field from a search box.** This is a
+> disclosed residual risk, not a closed one, and `setValue` is the primitive it
+> affects: `argSafe` (§5.4) judges the *argument text*, never the *destination*.
+>
+> Mitigation: `setValue` additionally refuses when the target reports
+> `kAXFocusedAttribute == true`, since password prompts take focus. That is a
+> mitigation, not a guarantee — a password field that is already focused can
+> still be written to. v1 makes no claim that this is sufficient.
 
 A match is **`approvalRequired`**, never a silent dispatch and never a silent
 drop — the operator sees what was blocked and why. The regex is versioned with
