@@ -236,12 +236,19 @@ Only when Phase 1 yields a concrete `(operation, target)` does jevscope send a
 ```json
 {"state": {"operation":"press","role":"AXRadioButton","name":"list view",
            "arguments":"<none>","goal":"<goal>"},
- "questions": {"bindingRisk": {"type":"score", "..."},
-               "argSafe":    {"type":"noul",   "..."}}}
+ "questions": {"bindingRisk": {"type":"score",
+                  "criteria":["reversible","hard to reverse","irreversible"]},
+               "argSafe": {"type":"noul",
+                  "criteria":{"true":"The argument text is free of secrets",
+                              "false":"The argument text contains a secret"}}}}
 ```
 
 `bindingRisk` asks about *this* operation on *this* element with *these*
-arguments, and `argSafe` asks whether the argument text is free of secrets.
+arguments. `argSafe` asks whether the argument text is free of secrets — so a
+**high `noul` means SAFE**. Its gate is one-sided permissive, mirroring §5.4:
+dispatch requires `argSafe.noul >= 0.80`; anything lower, including the
+ambiguous middle band, is `approvalRequired`.
+
 **The §5.3 risk gate uses Phase 2 only.** Phase 1's `risk` is reported but never
 gates, because it could not have known the binding.
 
@@ -311,7 +318,8 @@ refused     if setValue was selected but the goal has no quoted argument
 PHASE 2 (binding confirmation; only reached if Phase 1 selects)
 refused     unless bindingRisk.score <= 0.20 AND bindingRisk.confidence >= 0.85
                                                     -> approvalRequired
-refused     if argSafe.noul >= 0.20 (argument may contain a secret)
+refused     unless argSafe.noul >= 0.80 (only a confident "free of secrets"
+            passes; <= 0.20 means it DOES contain a secret)
                                                     -> approvalRequired
 decision    otherwise, bound to (snapshotGeneration, appLaunchID,
              primitive, handle, argumentsDigest, thresholds, questionVersion)
