@@ -314,8 +314,9 @@ refused     if the target matches the §6.1b semantic exclusion
                                                     -> approvalRequired
 refused     if setValue was selected but the goal has no quoted argument
                                                     -> unsupportedAction
-refused     if setValue targets an element reporting kAXFocusedAttribute == true
-            (AX cannot identify secure fields; see §6.1b)
+refused     if setValue targets an element whose kAXSubroleAttribute ==
+            kAXSecureTextFieldSubrole, OR reporting kAXFocusedAttribute == true
+            (see §6.1b; subrole population is app-dependent, so both apply)
                                                     -> approvalRequired
 
 PHASE 2 (binding confirmation; only reached if Phase 1 selects)
@@ -447,20 +448,25 @@ Match against the label with word boundaries, after the §7.4 escaping. Roles
 additionally excluded regardless of label: an `AXMenuItem` inside a menu whose
 title matches the regex.
 
-> **Correction.** v3 also excluded "`AXSecureTextField` always". **That role
-> does not exist.** Neither `kAXSecureTextFieldRole` nor
-> `NSAccessibilityIsSecureTextFieldAttribute` is declared in the macOS 27 SDK,
-> and `NSSecureTextField.accessibilityRole()` reports the same `AXTextField`
-> role as `NSTextField` (`evidence/ax-secure-text-field.md`).
+> **Two corrections.** v3 excluded "`AXSecureTextField` always" as a *role*. It
+> is a **subrole**: the SDK declares
+> `kAXSecureTextFieldSubrole = CFSTR("AXSecureTextField")` in `AXRoleConstants.h:408`,
+> read via `kAXSubroleAttribute`. There is no `kAXSecureTextFieldRole`, and
+> `NSSecureTextField` reports the ordinary `AXTextField` role — which is why
+> v4's "AX cannot distinguish a password field" was wrong. Codex caught it.
 >
-> So **AX cannot distinguish a password field from a search box.** This is a
-> disclosed residual risk, not a closed one, and `setValue` is the primitive it
-> affects: `argSafe` (§5.4) judges the *argument text*, never the *destination*.
+> The subrole **mechanism** is verified live: TextEdit exposes
+> `AXSearchField` through `kAXSubroleAttribute` on a real element. Whether a
+> given app populates `AXSecureTextField` on its password fields is
+> **app-dependent and UNVERIFIED here** — no password field was on screen
+> during testing.
 >
-> Mitigation: `setValue` additionally refuses when the target reports
-> `kAXFocusedAttribute == true`, since password prompts take focus. That is a
-> mitigation, not a guarantee — a password field that is already focused can
-> still be written to. v1 makes no claim that this is sufficient.
+> Rule: `setValue` refuses when `kAXSubroleAttribute == kAXSecureTextFieldSubrole`.
+> Because population is app-dependent, that is a **necessary** check, not a
+> sufficient one, so the focused-element refusal below is kept as well:
+> `setValue` also refuses when `kAXFocusedAttribute == true`, since password
+> prompts take focus. `argSafe` (§5.4) continues to judge the argument text,
+> never the destination.
 
 A match is **`approvalRequired`**, never a silent dispatch and never a silent
 drop — the operator sees what was blocked and why. The regex is versioned with
@@ -572,10 +578,19 @@ confirmation — an unchanged label proves nothing. Per primitive:
 |---|---|
 | `setValue` | re-read `AXValue` on that element **equals the intended argument** |
 | `press` on `AXRadioButton`/`AXCheckBox` | re-read `AXValue` (the selected state) **changed** from its pre-dispatch value |
-| `press` on any other role | **no reliable predicate exists** ⇒ `unknownOutcome` |
+| `press` on any other role | an app may expose its own state attribute; see below |
 
 If the re-read errors, times out, or shows no change, the outcome is
 `unknownOutcome`, not `applied` and not `refused`. The action was dispatched.
+
+For roles with no generic predicate, a **per-target** predicate may be
+registered: `{ attribute, from, to }`, checked after dispatch. Unreadable
+`AXValue` does **not** prove no such attribute exists — measured, `AXMenuButton`
+`AXValue` is unreadable while `AXPopUpButton` exposes a readable one, so apps do
+vary. A registered predicate that fires yields `applied`; if none is registered
+or none fires, the outcome is `unknownOutcome`. Registration is an
+operator-authored, versioned table in `confirmation-predicate.json`, never
+inferred from a failed read.
 A dispatched mutation is **never** automatically retried. HTTP retries to the
 Jev API are a separate concern from actuator retries.
 
@@ -786,6 +801,21 @@ Let **S** be the set of `act` cases where the final decision's `operation`
 equals `expect.operation`. `targetAccuracy` is conditional on **S** for both its
 numerator and denominator, so the two always describe the same population.
 
+**`exactAccuracy` is defined separately for each class**, because a `refuse`
+case has no operation, target or arguments to be correct about:
+
+- **`act` case** — exactly correct when `operation`, `targetId` **and**
+  `arguments` all match the oracle.
+- **`refuse` case** — exactly correct when the final outcome is a refusal whose
+  code **string-equals** `expectRefusal`. Matching is on the code alone, not
+  on a class: refusing `lowConfidence` when `approvalRequired` was expected is
+  **not** exact-correct, because those are different refusals with different
+  causes. A `no_action` decision (`Decision(action: .none)`) is **never**
+  exact-correct on a `refuse` case — "I found nothing to do" is not the same
+  as "I refused for the expected reason".
+
+`exactAccuracy` numerator is the union of those two; denominator is all cases.
+
 | Metric | Numerator | Denominator |
 |---|---|---|
 | `operationAccuracy` | correct `operation` | all `act` cases |
@@ -844,11 +874,29 @@ outside it.
 | `elements[].identifier` | → `<IDENTIFIER_NN>`, or omitted when absent |
 | `elements[].value` | → `<VALUE_NN>` |
 | `elements[].frame` | jitter `(index × 7) mod 5` px on each edge; order preserved |
-| `elements[].role`, `actions`, `enabled`, `handle` | **unchanged** — not user content |
+| `elements[].role` | **only if** it is a member of the 57 standard `kAX*Role` strings, else → `<ROLE_NN>` |
+| `elements[].actions`, `enabled`, `handle`, `path` | **unchanged** — enumerated vocabulary, not content |
 | `application` | → `com.example.<n>` |
 | `goal` | → **omitted entirely**; replay fixtures carry no goal |
 | `expect` / oracle | **omitted** — replay fixtures are never scored |
 | recorded Jev responses | **discarded**; each fixture carries responses recorded against the *transformed* state |
+
+> **Correction.** v4 listed `role` as "unchanged — not user content". That is
+> unsafe: AX permits **custom role strings**, and an app may embed a window
+> title, a document name or a user identifier in one. Only the standard role
+> vocabulary is passed through; anything else is placeholdered. Codex caught it.
+>
+**Required fixture metadata** — a replay fixture is invalid without all of
+> these, and `scripts/` rejects one that omits any:
+>
+| Field | Value |
+|---|---|
+| `schemaVersion` | integer, incremented on any shape change |
+>| `transformationVersion` | integer identifying the transform below, so a fixture can be re-derived |
+>| `sourceClass` | literal `"realCapture"` |
+>| `snapshotComplete` | boolean, preserved from §8.2 |
+>| `generation` | integer, renumbered from 1 in the fixture; never the live counter |
+>| `id`, `createdAt` | fixture id and its capture date (date only, no time of day) |
 
 Omitting the goal and the oracle is what makes the fixture coherent: `<LABEL_07>`
 cannot be a valid answer to a real goal, and a goal that names real controls

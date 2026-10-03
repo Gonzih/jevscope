@@ -1,38 +1,55 @@
-# Secure text fields are not distinguishable through AX — verified 2026-10-02
+# Secure text fields: the subrole exists — corrected 2026-10-02
 
-SPEC §6.1b excluded "`AXSecureTextField` always". That role **does not exist**.
+SPEC §6.1b concerns identifying a password field so `setValue` does not write
+into one. **This file previously concluded that AX cannot do it. That was wrong.**
 
-## Probes
+## Correction
 
-| symbol | result |
-|---|---|
-| `kAXSecureTextFieldRole` | **absent** — no such constant in `AXAttributeConstants.h` (macOS 27 SDK); the only "secure" hit is prose in a doc comment |
-| `kAXSecureFieldRole` | absent |
-| `NSAccessibilityIsSecureTextFieldAttribute` | **absent** — compiler: "cannot find in scope"; not declared in the AppKit headers |
-| `NSSecureTextField.accessibilityRole()` | reports the same `AXTextField` role as `NSTextField` |
+The correct API is a **subrole**, not a role.
 
-## Consequence
+| symbol | location | result |
+|---|---|---|
+| `kAXSecureTextFieldSubrole` | `AXRoleConstants.h:408` — `CFSTR("AXSecureTextField")` | **exists** |
+| `kAXSubroleAttribute` | `AXAttributeConstants.h:46` | **exists** |
+| `kAXSecureTextFieldRole` | — | does not exist (correct in both revisions) |
+| `NSAccessibilityIsSecureTextFieldAttribute` | — | does not exist (correct in both revisions) |
+| `NSAccessibilitySecureTextFieldSubrole` | `NSAccessibilityConstants.h:573` | **exists** |
 
-macOS exposes **no role and no standard attribute** that distinguishes a secure
-text field from an ordinary one. An `AXUIElement` for a password field is
-indistinguishable from one for a search box.
+The earlier revision searched only `AXAttributeConstants.h`, missed
+`AXRoleConstants.h`, and concluded from the absence of a *role* constant that AX
+had no secure-field classification. Codex caught it. The absence of
+`kAXSecureTextFieldRole` is true and was never the relevant question.
 
-This matters because `setValue` writes operator-supplied text into a field. If
-the target is a password field, jevscope cannot tell, and §5.4's `argSafe` gate
-judges the *argument text*, not the *destination*.
+`NSSecureTextField` does report the ordinary `AXTextField` role — so the
+discriminator is carried one level down, in the subrole.
 
-## Spec response
+## The mechanism is verified live
 
-1. The nonexistent `AXSecureTextField` role is removed from §6.1b.
-2. The limitation is stated rather than papered over: AX cannot identify a
-   secure field, so this is a **disclosed residual risk**, not a closed one.
-3. `setValue` additionally requires that the target is **not** the currently
-   focused UI element (`kAXFocusedAttribute == true`), because password prompts
-   take focus. This is a mitigation, not a guarantee: a pre-focused password
-   field can still be written to.
+Subroles are readable on real elements:
 
-## UNVERIFIED
+| app | role | subrole |
+|---|---|---|
+| TextEdit | `AXTextField` | **`AXSearchField`** |
+| Safari | `AXTextField` / `AXTextArea` | none |
+| Finder | `AXTextField` | none |
+| Notes | `AXTextField` | none |
 
-Whether any app sets a distinguishing `kAXSubroleAttribute` on a secure field was
-not tested; no such convention is documented in the SDK. No claim is made either
-way, and v1 does not rely on one.
+TextEdit populating `AXSearchField` confirms `kAXSubroleAttribute` works on
+real elements; `AXSearchField` is the exact analogue of what
+`AXSecureTextField` would be for a password field.
+
+## What is still UNVERIFIED
+
+No password field was on screen during testing, so **whether any specific app
+actually populates `kAXSecureTextFieldSubrole` is unverified.** Population is
+app-dependent: it is an app's or framework's choice, and a custom control may
+publish no subrole at all.
+
+Therefore, in SPEC §6.1b:
+
+- the subrole check is **necessary but not sufficient**;
+- it is paired with a focused-element refusal (`kAXFocusedAttribute == true`),
+  since password prompts take focus;
+- neither claim is that secure fields are reliably detectable.
+
+Reproduce the mechanism probe with `evidence/axsubrole.swift`.
