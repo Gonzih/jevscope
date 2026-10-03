@@ -46,12 +46,17 @@ jevscope refuses rather than guesses. It will not:
 
 - act on a Choice/Score answer below threshold
 - dispatch when the operation or target is `none`
-- act on an `irreversible` risk score, or a `hard to reverse` one below its
-  own confidence threshold
-- dispatch a primitive outside the allowlist (`press`, `setValue`)
-- act on an incomplete snapshot, or one with fewer than 3 eligible candidates
+- dispatch when the **binding-specific** Phase-2 risk gate is not satisfied
+  (`score ≤ 0.20` **and** `confidence ≥ 0.85`) — Phase 1's risk never authorises
+- dispatch when the Phase-2 secret check flags the argument text
+- dispatch when the target label matches the §6.1b destructive-label regex,
+  even if it is a perfectly capable button
+- dispatch a primitive outside the allowlist (`press`, `setValue`), or
+  `setValue` with no quoted argument in the goal
+- act when the snapshot is **partial** **or** has fewer than 3 eligible
+  candidates
 - resolve a handle that is not in this snapshot's generation
-- **ever** retry a dispatched mutation
+- **ever** retry a dispatched mutation, or reuse a consumed approval token
 
 ### The race we cannot close
 
