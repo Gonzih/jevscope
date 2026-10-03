@@ -874,7 +874,7 @@ outside it.
 | `elements[].identifier` | → `<IDENTIFIER_NN>`, or omitted when absent |
 | `elements[].value` | → `<VALUE_NN>` |
 | `elements[].frame` | jitter `(index × 7) mod 5` px on each edge; order preserved |
-| `elements[].role` | **only if** it is a member of the 57 standard `kAX*Role` strings, else → `<ROLE_NN>` |
+| `elements[].role` | **only if** it is one of the **58** standard `kAX*Role` strings (verified in `AXRoleConstants.h`; all begin `AX` and are uppercase), else → `<ROLE_NN>` |
 | `elements[].actions`, `enabled`, `handle`, `path` | **unchanged** — enumerated vocabulary, not content |
 | `application` | → `com.example.<n>` |
 | `goal` | → **omitted entirely**; replay fixtures carry no goal |
