@@ -563,9 +563,10 @@ never validate against a newer one.
    approval record is consumed and the dispatch is issued: `setValue` requires
    `kAXSubroleAttribute != kAXSecureTextFieldSubrole` **and**
    `kAXFocusedAttribute != true`, re-read from the re-acquired element. The
-   check is made here, not only at `decide`, because focus and subrole are not
-   part of the fingerprint tuple (`SPEC.md:496`) and can change after a valid
-   decision exists.
+   check is made here, not only at `decide`, because **focus** is not part of
+   the fingerprint tuple (`SPEC.md:496`) and can change after a valid decision
+   exists. (Subrole *is* in the tuple, so a subrole change is already caught by
+   the §6.2 fingerprint match; re-reading it here is belt-and-braces.)
 6. **A failed, missing or malformed required read is `refused`, never
    "unchanged".** For every attribute in 3–5, a non-success `AXError`, a `nil`
    where a value is required, or a wrong Core Foundation type yields

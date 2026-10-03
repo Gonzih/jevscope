@@ -16,10 +16,14 @@ TextEdit     AXMenuButton   column view                             UNREADABLE  
 TextEdit     AXPopUpButton   Where:                                 String(...)       unsupported
 
 ## Findings
-1. Toggles DO expose a comparable state value: Finder radios as CFNumber
-   0/1, Safari radios as CFBoolean. So 'AXValue changed from the
-   pre-dispatch value' is a real, workable confirmation for press on
-   AXRadioButton and AXCheckBox.
+1. Several roles expose a **readable, comparable `AXValue`**: Finder radios as
+   `CFNumber` 0/1, Safari radios as `CFBoolean`. That makes a pre/post comparison
+   *possible* for `press` on those roles.
+   **What this does NOT show:** the table is a set of static reads taken without
+   pressing anything, so it demonstrates neither that a press actually changes
+   the value nor that any post-press confirmation was observed. No `AXCheckBox`
+   appears anywhere in this file, so nothing here supports that role. Treat this
+   as evidence that the state is *readable*, not that confirmation *works*.
 2. AXMenuButton AXValue was UNREADABLE in this sample. That does **not** prove
    that no confirmation predicate exists for it: AXPopUpButton in the same run
    exposed a readable String value, so apps vary in what they publish. The
