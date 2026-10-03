@@ -452,3 +452,134 @@ final class StrictNumberJSONTests: XCTestCase {
         XCTAssertEqual(a.pMax, 1.0)
     }
 }
+
+/// SPEC §9: replay determinism and metric denominators.
+final class ReplayTests: XCTestCase {
+
+    private func actCase(_ id: String, op: String = "press", target: String = "e00",
+                         args: String? = nil) -> CorpusCase {
+        CorpusCase(id: id, corpusClass: .act, app: "com.example.x",
+                   goal: "do \(id)", snapshotPath: "cases/\(id).json",
+                   expectOperation: op, expectTargetId: target,
+                   expectArgumentsDigest: args.map(Gate.sha256Hex))
+    }
+
+    func testReplayIsDeterministicAcrossRuns() throws {
+        let corpus = [actCase("a"), actCase("b", target: "e01")]
+        let decide: (CorpusCase) -> NormalizedResult = { c in
+            NormalizedResult(caseId: c.id, outcome: .acted,
+                             operation: c.expectOperation, targetId: c.expectTargetId)
+        }
+        let out = try Replay.assertDeterministic(corpus: corpus, decide: decide)
+        XCTAssertEqual(out.count, 2)
+    }
+
+    func testEmptyDenominatorsAreNilNotZeroOrOne() {
+        // No refuse cases at all: recall and precision must be nil.
+        let corpus = [actCase("a")]
+        let m = Metrics(corpus: corpus, results: [
+            NormalizedResult(caseId: "a", outcome: .acted, operation: "press", targetId: "e00")
+        ])
+        XCTAssertNil(m.refusalRecall, "no oracle refusals => nil, never 1.0")
+        XCTAssertNil(m.refusalPrecision)
+        XCTAssertEqual(m.coverage, 1.0)
+    }
+
+    func testRefuseEverythingScoresRecallOneButPrecisionLow() {
+        // Codex's counterexample: 100 cases, 20 need refusal, refuse all.
+        var corpus: [CorpusCase] = []
+        for i in 0..<100 {
+            corpus.append(i < 20
+                ? CorpusCase(id: "r\(i)", corpusClass: .refuse, app: "x", goal: "g",
+                             snapshotPath: "s", expectRefusal: .approvalRequired)
+                : actCase("a\(i)"))
+        }
+        let results = corpus.map {
+            NormalizedResult(caseId: $0.id, outcome: .refused,
+                             refusalCode: $0.corpusClass == .refuse
+                                ? $0.expectRefusal : .lowConfidence)
+        }
+        let m = Metrics(corpus: corpus, results: results)
+        XCTAssertEqual(m.refusalRecall, 1.0, "all oracle refusals caught")
+        XCTAssertEqual(m.refusalPrecision ?? 0, 0.2, accuracy: 0.001,
+                       "precision is 20/100, NOT 1.0")
+        XCTAssertEqual(m.coverage, 0.0, "coverage exposes the refuse-everything run")
+        XCTAssertNil(m.falseActRate, "nothing was acted on")
+    }
+
+    func testNoActionIsNeverExactCorrectOnARefuseCase() {
+        let corpus = [CorpusCase(id: "r", corpusClass: .refuse, app: "x", goal: "g",
+                                 snapshotPath: "s", expectRefusal: .approvalRequired)]
+        let asNoAction = Metrics(corpus: corpus, results: [
+            NormalizedResult(caseId: "r", outcome: .noAction)
+        ])
+        XCTAssertEqual(asNoAction.exactAccuracy, 0.0,
+                       "'found nothing to do' is not 'refused for the expected reason'")
+
+        let rightCode = Metrics(corpus: corpus, results: [
+            NormalizedResult(caseId: "r", outcome: .refused, refusalCode: .approvalRequired)
+        ])
+        XCTAssertEqual(rightCode.exactAccuracy, 1.0)
+
+        let wrongCode = Metrics(corpus: corpus, results: [
+            NormalizedResult(caseId: "r", outcome: .refused, refusalCode: .lowConfidence)
+        ])
+        XCTAssertEqual(wrongCode.exactAccuracy, 0.0, "refusal code must match exactly")
+    }
+
+    func testWrongTargetAmongDuplicatesIsNotScoredCorrect() {
+        let corpus = [actCase("dup", target: "e07")]
+        let wrong = Metrics(corpus: corpus, results: [
+            NormalizedResult(caseId: "dup", outcome: .acted, operation: "press",
+                             targetId: "e03")
+        ])
+        XCTAssertEqual(wrong.targetAccuracy, 0.0,
+                       "a same-label different element is not correct")
+        let right = Metrics(corpus: corpus, results: [
+            NormalizedResult(caseId: "dup", outcome: .acted, operation: "press",
+                             targetId: "e07")
+        ])
+        XCTAssertEqual(right.targetAccuracy, 1.0)
+    }
+
+    func testTargetAccuracyUsesTheSameSubsetForNumeratorAndDenominator() {
+        // Two act cases; only one has the right operation, so S has one member.
+        let corpus = [actCase("ok"), actCase("badop", op: "setValue")]
+        let m = Metrics(corpus: corpus, results: [
+            NormalizedResult(caseId: "ok", outcome: .acted, operation: "press",
+                             targetId: "e00"),
+            NormalizedResult(caseId: "badop", outcome: .acted, operation: "press",
+                             targetId: "e00"),
+        ])
+        XCTAssertEqual(m.operationAccuracy, 0.5, "one of two operations correct")
+        XCTAssertEqual(m.targetAccuracy, 1.0,
+                       "denominator is S = {ok}, so the wrong-op case is excluded")
+    }
+
+    func testFalseActRateCountsActsOnRefuseCases() {
+        let corpus = [
+            CorpusCase(id: "r", corpusClass: .refuse, app: "x", goal: "g",
+                       snapshotPath: "s", expectRefusal: .approvalRequired),
+            actCase("a"),
+        ]
+        let m = Metrics(corpus: corpus, results: [
+            NormalizedResult(caseId: "r", outcome: .acted, operation: "press", targetId: "e00"),
+            NormalizedResult(caseId: "a", outcome: .acted, operation: "press", targetId: "e00"),
+        ])
+        XCTAssertEqual(m.falseActRate, 0.5, "1 of 2 acts hit a refuse case")
+    }
+
+    func testArgumentsDigestParticipatesInExactAccuracy() {
+        let corpus = [actCase("s", op: "setValue", args: "cats")]
+        let good = Metrics(corpus: corpus, results: [
+            NormalizedResult(caseId: "s", outcome: .acted, operation: "setValue",
+                             targetId: "e00", argumentsDigest: Gate.sha256Hex("cats"))
+        ])
+        XCTAssertEqual(good.exactAccuracy, 1.0)
+        let bad = Metrics(corpus: corpus, results: [
+            NormalizedResult(caseId: "s", outcome: .acted, operation: "setValue",
+                             targetId: "e00", argumentsDigest: Gate.sha256Hex("dogs"))
+        ])
+        XCTAssertEqual(bad.exactAccuracy, 0.0, "wrong argument text is not exact")
+    }
+}
