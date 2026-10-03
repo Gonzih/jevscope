@@ -674,3 +674,60 @@ final class AncestorAndReadFailureTests: XCTestCase {
         XCTAssertEqual(s.elements.count, 1)
     }
 }
+
+/// stringAttrRequired must distinguish THREE cases. Conflating any two of them
+/// is a fail-open bug, and codex found both conflations in sequence: first a
+/// failed read (`try?` at the call site), then a wrong-typed value.
+///
+/// Measured on this machine: an AXApplication has no subrole, and the read
+/// returns AXError -25212 (noValue) -> absent, which MUST be allowed, or every
+/// real app would refuse. A system-wide element returns -25205
+/// (attributeUnsupported) -> a failed read, which MUST refuse.
+final class RequiredStringReadTests: XCTestCase {
+
+    private func adapter() -> AXAdapter { AXAdapter(appBundleID: "com.example.x") }
+
+    func testAbsentSubroleOnARealAppIsAllowed() throws {
+        try XCTSkipUnless(
+            NSRunningApplication.runningApplications(
+                withBundleIdentifier: "com.apple.finder").first != nil,
+            "requires Finder to be running")
+        let app = NSRunningApplication.runningApplications(
+            withBundleIdentifier: "com.apple.finder").first!
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        let sub = try adapter().stringAttrRequired(root, kAXSubroleAttribute as String)
+        XCTAssertNil(sub, "noValue means absent, which is allowed")
+    }
+
+    func testUnsupportedAttributeRefuses() {
+        // Measured: the system-wide element answers AXSubrole with
+        // AXError -25205 (attributeUnsupported), not noValue. That is a FAILED
+        // read and must refuse rather than pass as absent.
+        let sys = AXUIElementCreateSystemWide()
+        XCTAssertThrowsError(
+            try adapter().stringAttrRequired(sys, kAXSubroleAttribute as String),
+            "attributeUnsupported is a failed read, not an absent value")
+    }
+
+    func testRealStringAttributeReadsThrough() throws {
+        try XCTSkipUnless(
+            NSRunningApplication.runningApplications(
+                withBundleIdentifier: "com.apple.finder").first != nil,
+            "requires Finder to be running")
+        let app = NSRunningApplication.runningApplications(
+            withBundleIdentifier: "com.apple.finder").first!
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        let role = try adapter().stringAttrRequired(root, kAXRoleAttribute as String)
+        XCTAssertEqual(role, "AXApplication")
+    }
+
+    func testAbsentIsNotTheSameAsUnsupported() {
+        // The distinction the two prior bugs collapsed.
+        let a = adapter()
+        let sys = AXUIElementCreateSystemWide()
+        // Unsupported throws...
+        XCTAssertThrowsError(
+            try a.stringAttrRequired(sys, kAXSubroleAttribute as String))
+        // ...and must not be silently converted to nil by any caller.
+    }
+}

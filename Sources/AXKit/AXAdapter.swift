@@ -291,15 +291,32 @@ public final class AXAdapter: AXBackend, @unchecked Sendable {
         return liveHandles[path]
     }
 
-    /// String read that DISTINGUISHES absent from failed.
-    private func stringAttrRequired(_ e: AXUIElement, _ name: String) throws -> String? {
+    /// String read that DISTINGUISHES three cases, because conflating any two
+    /// of them is a fail-open bug:
+    ///
+    ///   * `.noValue`      -> nil. Genuinely absent, which is allowed.
+    ///   * any AXError     -> throw. The read failed; refuse.
+    ///   * wrong CF type   -> throw. A number or boolean where a string was
+    ///     required is MALFORMED, not "absent". Treating it as absent let a
+    ///     subrole read returning NSNumber(777) or a boolean pass the secure-
+    ///     field check (re-validation).
+    internal func stringAttrRequired(_ e: AXUIElement, _ name: String) throws -> String? {
         let r = copyAttribute(e, name)
         if let err = r.error {
-            if err == .noValue { return nil }              // genuinely absent
-            throw AXBackendError.readFailed("\(name): \(err)")  // failed => refuse
+            if err == .noValue { return nil }
+            throw AXBackendError.readFailed("\(name): \(err)")
         }
-        guard let v = r.value as? String, !v.isEmpty else { return nil }
-        return v
+        guard let v = r.value else { return nil }          // absent, allowed
+        if CFGetTypeID(v) == CFBooleanGetTypeID() {
+            throw AXBackendError.readFailed("\(name): boolean where string required")
+        }
+        if CFGetTypeID(v) == CFNumberGetTypeID() {
+            throw AXBackendError.readFailed("\(name): number where string required")
+        }
+        guard let s = v as? String else {
+            throw AXBackendError.readFailed("\(name): unexpected type")
+        }
+        return s.isEmpty ? nil : s
     }
 
     /// SPEC §6.3 precondition 5: re-evaluate the §6.1b predicate LIVE.
