@@ -25,6 +25,8 @@ public enum ScriptedEvent: Sendable, Equatable {
     case preflightReadFails(attribute: String)
     /// The target becomes focused between decide and apply (B12).
     case targetBecomesFocused
+    /// The subrole read FAILS (returns an error) rather than returning absent.
+    case subroleReadFails
     /// Press dispatched, but AX answers cannotComplete.
     case dispatchCannotComplete
 }
@@ -92,7 +94,8 @@ public final class ScriptedBackend: AXBackend, @unchecked Sendable {
             }
         case .appRestart:
             launch = "999:restarted"
-        case .preflightReadFails, .targetBecomesFocused, .dispatchCannotComplete:
+        case .preflightReadFails, .targetBecomesFocused, .dispatchCannotComplete,
+             .subroleReadFails:
             break   // consumed by the corresponding operation
         }
     }
@@ -134,6 +137,10 @@ public final class ScriptedBackend: AXBackend, @unchecked Sendable {
         switch ev {
         case .preflightReadFails:
             throw AXBackendError.readFailed("injected preflight read failure")
+        case .subroleReadFails:
+            // A FAILED read must throw. Using `try?` here once turned this into
+            // nil, and nil != "AXSecureTextField" passed the check.
+            throw AXBackendError.readFailed("AXSubrole: cannotComplete")
         case .targetBecomesFocused:
             throw AXBackendError.readFailed("target is focused")
         default:

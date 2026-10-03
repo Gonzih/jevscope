@@ -310,17 +310,17 @@ public final class AXAdapter: AXBackend, @unchecked Sendable {
         guard let liveEl = elementFor(live.path) else {
             throw AXBackendError.readFailed("no live element for \(element.path)")
         }
-        // A FAILED subrole read is unknown, and unknown refuses. Treating it as
-        // "not secure" let a setValue through on an unread target (re-validation).
-        let subrole = try? stringAttrRequired(liveEl, kAXSubroleAttribute as String)
+        // A FAILED subrole read is unknown, and unknown refuses.
+        //
+        // `try?` MUST NOT be used here: it converts the thrown read failure
+        // into nil, and `nil != "AXSecureTextField"` passes -- which is exactly
+        // how an unreadable target reached a setValue (re-validation).
+        let subrole = try stringAttrRequired(liveEl, kAXSubroleAttribute as String)
         if subrole == kAXSecureTextFieldSubrole as String {
             throw AXBackendError.readFailed("target is a secure text field")
         }
         // Read focus from the LIVE element. No system-wide fallback: that would
         // answer for a different element entirely.
-        guard let liveEl = elementFor(live.path) else {
-            throw AXBackendError.readFailed("no live element for \(element.path)")
-        }
         if let f = try boolAttr(liveEl, kAXFocusedAttribute as String), f {
             throw AXBackendError.readFailed("target is focused")
         }

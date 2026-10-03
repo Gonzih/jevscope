@@ -621,6 +621,36 @@ final class AncestorAndReadFailureTests: XCTestCase {
         XCTAssertEqual(SemanticExclusions.subroleIsSecure("AXSearchField"), false)
     }
 
+    func testSubroleReadFailureRefusesRatherThanPassing() {
+        // The surviving path from the last re-validation: an AXSubrole read
+        // returning an error must REFUSE. A `try?` once turned the failure into
+        // nil, and nil != "AXSecureTextField" passed.
+        let e = CapturedElement(handle: Handle(index: 0), path: "/0", role: "AXTextField",
+                                subrole: nil, identifier: nil, title: "Target 1",
+                                elementDescription: nil, value: nil, enabled: .enabled,
+                                focused: nil, frame: Frame(x: 1, y: 1, width: 40, height: 20),
+                                actions: [])
+        let b = ScriptedBackend(elements: [e], events: [.subroleReadFails])
+        XCTAssertThrowsError(
+            try b.revalidatePredicate(for: e, primitive: .setValue),
+            "an unreadable subrole is unknown, and unknown must refuse")
+        XCTAssertEqual(b.actionLog.count, 0,
+                       "a refused predicate check must leave the action log empty")
+    }
+
+    func testAbsentSubroleIsNotAFailure() {
+        // Absent is different from unreadable: absent must NOT throw, or every
+        // ordinary text field would refuse.
+        let e = CapturedElement(handle: Handle(index: 0), path: "/0", role: "AXTextField",
+                                subrole: nil, identifier: nil, title: "Search",
+                                elementDescription: nil, value: nil, enabled: .enabled,
+                                focused: false, frame: Frame(x: 1, y: 1, width: 40, height: 20),
+                                actions: [])
+        let b = ScriptedBackend(elements: [e])
+        XCTAssertNoThrow(try b.revalidatePredicate(for: e, primitive: .setValue),
+                         "an absent subrole is not secure, but it is not an error either")
+    }
+
     func testMalformedRoleIsNeverACandidate() {
         var e = item("Archive", under: nil)
         e.role = "?"
