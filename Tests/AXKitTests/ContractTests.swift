@@ -687,22 +687,34 @@ final class RequiredStringReadTests: XCTestCase {
 
     private func adapter() -> AXAdapter { AXAdapter(appBundleID: "com.example.x") }
 
-    func testAbsentSubroleOnARealAppIsAllowed() throws {
+    /// Live AX reads need BOTH a running app AND Accessibility permission. A
+    /// reviewer process may have the app and lack the permission, in which case
+    /// the read returns AXError -25211 (APIDisabled). Skipping on app presence
+    /// alone left `swift test` failing outside this account.
+    private func requireLiveAX() throws -> AXUIElement {
         try XCTSkipUnless(
             NSRunningApplication.runningApplications(
                 withBundleIdentifier: "com.apple.finder").first != nil,
             "requires Finder to be running")
+        try XCTSkipUnless(AXIsProcessTrusted(),
+                          "requires Accessibility permission")
         let app = NSRunningApplication.runningApplications(
             withBundleIdentifier: "com.apple.finder").first!
-        let root = AXUIElementCreateApplication(app.processIdentifier)
+        return AXUIElementCreateApplication(app.processIdentifier)
+    }
+
+    func testAbsentSubroleOnARealAppIsAllowed() throws {
+        let root = try requireLiveAX()
         let sub = try adapter().stringAttrRequired(root, kAXSubroleAttribute as String)
         XCTAssertNil(sub, "noValue means absent, which is allowed")
     }
 
-    func testUnsupportedAttributeRefuses() {
+    func testUnsupportedAttributeRefuses() throws {
         // Measured: the system-wide element answers AXSubrole with
         // AXError -25205 (attributeUnsupported), not noValue. That is a FAILED
         // read and must refuse rather than pass as absent.
+        try XCTSkipUnless(AXIsProcessTrusted(),
+                          "requires Accessibility permission")
         let sys = AXUIElementCreateSystemWide()
         XCTAssertThrowsError(
             try adapter().stringAttrRequired(sys, kAXSubroleAttribute as String),
@@ -710,19 +722,15 @@ final class RequiredStringReadTests: XCTestCase {
     }
 
     func testRealStringAttributeReadsThrough() throws {
-        try XCTSkipUnless(
-            NSRunningApplication.runningApplications(
-                withBundleIdentifier: "com.apple.finder").first != nil,
-            "requires Finder to be running")
-        let app = NSRunningApplication.runningApplications(
-            withBundleIdentifier: "com.apple.finder").first!
-        let root = AXUIElementCreateApplication(app.processIdentifier)
+        let root = try requireLiveAX()
         let role = try adapter().stringAttrRequired(root, kAXRoleAttribute as String)
         XCTAssertEqual(role, "AXApplication")
     }
 
-    func testAbsentIsNotTheSameAsUnsupported() {
+    func testAbsentIsNotTheSameAsUnsupported() throws {
         // The distinction the two prior bugs collapsed.
+        try XCTSkipUnless(AXIsProcessTrusted(),
+                          "requires Accessibility permission")
         let a = adapter()
         let sys = AXUIElementCreateSystemWide()
         // Unsupported throws...
