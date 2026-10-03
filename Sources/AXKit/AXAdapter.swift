@@ -102,6 +102,10 @@ public final class AXAdapter: AXBackend, @unchecked Sendable {
     /// an empty array. Callers must treat nil as "enumeration lost" and mark
     /// the snapshot partial -- returning [] for both would silently swallow a
     /// dropped subtree and report a complete tree (re-validation).
+    /// Count of child-array members that were not AXUIElement. Surfaced in the
+    /// snapshot diagnostics; a non-zero count makes the snapshot partial.
+    private var malformedChildren = 0
+
     private func childrenChecked(_ e: AXUIElement) -> [AXUIElement]? {
         let r = copyAttribute(e, kAXChildrenAttribute as String)
         if let err = r.error {
@@ -110,7 +114,13 @@ public final class AXAdapter: AXBackend, @unchecked Sendable {
         guard let arr = r.value as? NSArray else { return nil }
         let want = AXUIElementGetTypeID()
         var out: [AXUIElement] = []
-        for case let obj as CFTypeRef in arr where CFGetTypeID(obj) == want {
+        for case let obj as CFTypeRef in arr {
+            guard CFGetTypeID(obj) == want else {
+                // A child that is not an AXUIElement is MALFORMED, not absent.
+                // Silently dropping it made a damaged tree look clean.
+                malformedChildren += 1
+                continue
+            }
             out.append(unsafeDowncast(obj, to: AXUIElement.self))
         }
         return out
@@ -147,33 +157,31 @@ public final class AXAdapter: AXBackend, @unchecked Sendable {
         // self-referential subtree recursed to the node cap -- 6000 nodes with
         // 27-level duplicate paths instead of the 339 real elements.
         //
-        // EQUALITY-AWARE, not hash-only (Codex B6). A hash set alone can collide
-        // and silently skip a genuinely different element, which loses nodes;
-        // that marks the snapshot partial. A true repeat is not a loss -- it is
-        // the same element appearing twice -- so it only stops the branch.
-        var seenHashes: [CFHashCode: AXUIElement] = [:]
+        // Cycle guard by EQUALITY, not by hash. A hash table can collide and
+        // silently drop a genuinely different element; Codex showed a witness
+        // where every unique node was retained yet the snapshot still went
+        // partial, because a collision was indistinguishable from a repeat.
+        // CFEqual against a short seen-list has no such failure mode, and a
+        // real repeat genuinely loses nothing so it must NOT mark partial.
+        var seen: [AXUIElement] = []
 
-        func walk(_ e: AXUIElement, path: [Int], depth: Int) {
+        func walk(_ e: AXUIElement, path: [Int], depth: Int, ancestors: [String]) {
             guard collected.count < Self.maxNodes else { diag.limit += 1; partial = true; return }
             guard depth <= Self.maxDepth else { diag.cycleGuard += 1; partial = true; return }
-            let h = CFHash(e)
-            if let prior = seenHashes[h] {
-                if CFEqual(prior, e) {
-                    diag.cycleGuard += 1          // same element: stop, nothing lost
-                    return
-                }
-                // Hash collision with a DIFFERENT element: distinguishing them
-                // is required, so a duplicate sibling in the enumeration is
-                // dropped and the snapshot becomes partial.
-                diag.cycleGuard += 1; partial = true
+            if seen.contains(where: { CFEqual($0, e) }) {
+                // The same element reached twice: stopping here loses nothing,
+                // so the snapshot stays complete.
+                diag.cycleGuard += 1
+                return
             }
-            seenHashes[h] = e
+            seen.append(e)
 
             let role = stringAttr(e, kAXRoleAttribute as String) ?? "?"
             let subrole = stringAttr(e, kAXSubroleAttribute as String)
             let identifier = stringAttr(e, kAXIdentifierAttribute as String)
             let title = stringAttr(e, kAXTitleAttribute as String)
             let desc = stringAttr(e, kAXDescriptionAttribute as String)
+            let help = stringAttr(e, kAXHelpAttribute as String)
             let value = stringAttr(e, kAXValueAttribute as String)
             let enabledRaw = try? boolAttr(e, kAXEnabledAttribute as String)
             let enabled: Enabled = enabledRaw == true ? .enabled
@@ -187,19 +195,30 @@ public final class AXAdapter: AXBackend, @unchecked Sendable {
                 path: "/" + path.map(String.init).joined(separator: "/"),
                 role: role, subrole: subrole, identifier: identifier, title: title,
                 elementDescription: desc, value: value, enabled: enabled,
-                focused: focused, frame: fr, actions: acts))
+                focused: focused, frame: fr, actions: acts,
+                ancestorLabels: ancestors))
 
             switch childrenChecked(e) {
             case .some(let kids):
                 if kids.isEmpty { /* a genuine leaf, not truncation */ }
-                for (i, c) in kids.enumerated() { walk(c, path: path + [i], depth: depth + 1) }
+                let isContainer = role == kAXMenuRole as String
+                    || role == kAXPopUpButtonRole as String
+                    || role == kAXMenuBarItemRole as String
+                let label = desc ?? title ?? help
+                let next = (isContainer && label.map { !$0.isEmpty } == true)
+                    ? ancestors + [label!] : ancestors
+                for (i, c) in kids.enumerated() {
+                    walk(c, path: path + [i], depth: depth + 1, ancestors: next)
+                }
             case .none:
                 // Enumeration LOST: the subtree below is unknown, so this
                 // snapshot is partial rather than falsely complete.
                 diag.truncated += 1; partial = true
+            default: break
             }
+            if malformedChildren > 0 { partial = true }
         }
-        walk(root, path: [], depth: 0)
+        walk(root, path: [], depth: 0, ancestors: [])
 
         return Snapshot(
             generation: generation,
@@ -272,12 +291,29 @@ public final class AXAdapter: AXBackend, @unchecked Sendable {
         return liveHandles[path]
     }
 
+    /// String read that DISTINGUISHES absent from failed.
+    private func stringAttrRequired(_ e: AXUIElement, _ name: String) throws -> String? {
+        let r = copyAttribute(e, name)
+        if let err = r.error {
+            if err == .noValue { return nil }              // genuinely absent
+            throw AXBackendError.readFailed("\(name): \(err)")  // failed => refuse
+        }
+        guard let v = r.value as? String, !v.isEmpty else { return nil }
+        return v
+    }
+
     /// SPEC §6.3 precondition 5: re-evaluate the §6.1b predicate LIVE.
     public func revalidatePredicate(for element: CapturedElement,
                                     primitive: Primitive) throws {
         let live = try reAcquire(path: element.path)
         guard primitive == .setValue else { return }
-        if live.subrole == kAXSecureTextFieldSubrole as String {
+        guard let liveEl = elementFor(live.path) else {
+            throw AXBackendError.readFailed("no live element for \(element.path)")
+        }
+        // A FAILED subrole read is unknown, and unknown refuses. Treating it as
+        // "not secure" let a setValue through on an unread target (re-validation).
+        let subrole = try? stringAttrRequired(liveEl, kAXSubroleAttribute as String)
+        if subrole == kAXSecureTextFieldSubrole as String {
             throw AXBackendError.readFailed("target is a secure text field")
         }
         // Read focus from the LIVE element. No system-wide fallback: that would

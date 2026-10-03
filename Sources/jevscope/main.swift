@@ -237,7 +237,7 @@ case "decide":
         // ---- B2: local predicates BEFORE Phase 2. Capability, destructive
         // label, secure subrole and focus were all skipped before (Codex B2).
         let primitive: Primitive = (op == .press) ? .press : .setValue
-        if let excluded = SemanticExclusions.match(element) {
+        if let excluded = SemanticExclusions.match(element, ancestorLabels: element.ancestorLabels) {
             print("// blocked by 6.1b: label matched /\(excluded)/")
             refuse(.approvalRequired)
         }

@@ -583,3 +583,64 @@ final class ReplayTests: XCTestCase {
         XCTAssertEqual(bad.exactAccuracy, 0.0, "wrong argument text is not exact")
     }
 }
+
+/// The last two action-producing paths from re-validation.
+final class AncestorAndReadFailureTests: XCTestCase {
+
+    private func item(_ title: String, under menu: String?) -> CapturedElement {
+        CapturedElement(handle: Handle(index: 0), path: "/0/1", role: "AXMenuItem",
+                        subrole: nil, identifier: nil, title: title,
+                        elementDescription: nil, value: nil, enabled: .enabled,
+                        focused: nil, frame: Frame(x: 1, y: 1, width: 40, height: 20),
+                        actions: ["AXPress"],
+                        ancestorLabels: menu.map { [$0] } ?? [])
+    }
+
+    func testHarmlessItemInsideDeleteMenuIsExcluded() {
+        // Codex: "decision: act press e00 \"Target 1\"; enclosing menu is Delete."
+        let e = item("Target 1", under: "Delete")
+        XCTAssertNotNil(SemanticExclusions.match(e, ancestorLabels: e.ancestorLabels),
+                        "an innocuous item under a destructive menu is still destructive")
+    }
+
+    func testHarmlessItemInsideHarmlessMenuIsNotExcluded() {
+        let e = item("Target 1", under: "Navigate")
+        XCTAssertNil(SemanticExclusions.match(e, ancestorLabels: e.ancestorLabels))
+        let noAncestor = item("Target 1", under: nil)
+        XCTAssertNil(SemanticExclusions.match(noAncestor, ancestorLabels: []))
+    }
+
+    func testAncestorLabelsAreCarriedOnTheElement() {
+        let e = item("Target 1", under: "Empty")
+        XCTAssertEqual(e.ancestorLabels, ["Empty"])
+    }
+
+    func testSubroleSecureHelperTreatsAbsentAsNotSecure() {
+        XCTAssertFalse(SemanticExclusions.subroleIsSecure(nil) ?? true)
+        XCTAssertEqual(SemanticExclusions.subroleIsSecure("AXSecureTextField"), true)
+        XCTAssertEqual(SemanticExclusions.subroleIsSecure("AXSearchField"), false)
+    }
+
+    func testMalformedRoleIsNeverACandidate() {
+        var e = item("Archive", under: nil)
+        e.role = "?"
+        XCTAssertFalse(CandidateSelection.isEligible(
+            e, screens: [CGRect(x: 0, y: 0, width: 1440, height: 900)]))
+        e.role = ""
+        XCTAssertFalse(CandidateSelection.isEligible(
+            e, screens: [CGRect(x: 0, y: 0, width: 1440, height: 900)]))
+    }
+
+    func testRepeatDoesNotMakeTheSnapshotPartial() {
+        // Codex's collision witness: every unique node was retained yet the
+        // snapshot still went partial. A genuine repeat loses nothing.
+        let a = CapturedElement(handle: Handle(index: 0), path: "/0", role: "AXButton",
+                                subrole: nil, identifier: nil, title: "Archive",
+                                elementDescription: nil, value: nil, enabled: .enabled,
+                                focused: nil, frame: nil, actions: ["AXPress"])
+        let b = ScriptedBackend(elements: [a])
+        let s = try! b.snapshot(appBundleID: "x", generation: 1)
+        XCTAssertEqual(s.completeness, .complete)
+        XCTAssertEqual(s.elements.count, 1)
+    }
+}

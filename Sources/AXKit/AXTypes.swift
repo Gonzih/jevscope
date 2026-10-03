@@ -51,12 +51,15 @@ public struct CapturedElement: Sendable, Codable {
     public var focused: Bool?
     public var frame: Frame?
     public var actions: [String]
+    /// Titles of enclosing menus/groups, outermost first. A harmless item
+    /// inside a "Delete" menu is still a delete (SPEC 6.1b).
+    public var ancestorLabels: [String]
 
     public init(
         handle: Handle, path: String, role: String, subrole: String? = nil,
         identifier: String? = nil, title: String? = nil, elementDescription: String? = nil,
         value: String? = nil, enabled: Enabled = .unknown, focused: Bool? = nil,
-        frame: Frame? = nil, actions: [String] = []
+        frame: Frame? = nil, actions: [String] = [], ancestorLabels: [String] = []
     ) {
         self.handle = handle
         self.path = path
@@ -70,6 +73,7 @@ public struct CapturedElement: Sendable, Codable {
         self.focused = focused
         self.frame = frame
         self.actions = actions
+        self.ancestorLabels = ancestorLabels
     }
 
     /// SPEC §6.2 / §7.1: name resolution is Description -> Title -> Help ->
