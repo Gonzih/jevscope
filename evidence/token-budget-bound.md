@@ -1,39 +1,57 @@
-# Token budget bound — verified 2026-10-02
+# Token budget bound — corrected 2026-10-02
 
-SPEC §7.3 budgets on **UTF-8 bytes of the fully serialized request**, assuming
-**1 token ≤ 1 byte**. There is no official tokenizer, so this bound is measured
-rather than assumed. (The v1 `chars/3.5` estimate was rejected in review as
-unverified.)
+SPEC §7.3 budgets on **UTF-8 bytes of the serialized request plus a fixed
+framing allowance**. There is no official tokenizer, so the bound is measured.
 
-## Method
+## Correction
 
-Build a synthetic element table of N rows, serialize the complete request as
-UTF-8, measure its byte length, send it, and read the server's reported
-`usage.input_tokens`.
+An earlier revision of this file claimed **`1 token ≤ 1 byte`** on the strength
+of worst-case 1.80 bytes/token. **That claim is false.** Codex's live check
+found a **139-byte** request reporting **304 input tokens** — more tokens than
+bytes. The model counts framing that is not present in the request body.
 
-| case | HTTP | request bytes | input tokens | bytes/token |
-|---|---|---|---|---|
-| ascii, 100 elements | 200 | 13,893 | 7,710 | 1.802 |
-| ascii, 400 elements | 200 | 55,568 | 30,485 | 1.823 |
-| unicode, 100 elements | 200 | 28,893 | 10,310 | 2.802 |
-| unicode, 300 elements | 200 | 86,668 | 30,685 | 2.824 |
-| ascii, 600 elements | 400 | 83,368 | — | `max_tokens_exceeded` |
+The original measurements missed this because every sample was large enough to
+amortise the constant: the ratio `bytes/tokens` rises with request size, and only
+small requests expose the fixed overhead.
 
-**Worst observed: 1.802 bytes/token.**
+## Full measurement set
 
-## Verdict
+| case | request bytes | input tokens | bytes/token |
+|---|---|---|---|
+| minimal, 2 options | **139** | **304** | **0.457** |
+| minimal, 3 options | 149 | 316 | 0.472 |
+| small state, 2 options | 172 | 309 | 0.557 |
+| ascii, 100 elements | 13,893 | 7,710 | 1.802 |
+| ascii, 400 elements | 55,568 | 30,485 | 1.823 |
+| unicode, 100 elements | 28,893 | 10,310 | 2.802 |
+| unicode, 300 elements | 86,668 | 30,685 | 2.824 |
 
-`1 token ≤ 1 byte` **holds with 1.8× margin** for ASCII and 2.8× for
-non-ASCII. The bound is conservative in the safe direction, so budgeting at
-28,000 bytes cannot under-count tokens. This also explains the ceiling: ~800
-ASCII elements serialise to ~33 KB ≈ 32.9k tokens, matching the §4.6 bisection.
+## Candidate bounds
+
+| bound | covers every sample? | worst margin |
+|---|---|---|
+| `bytes` | **no** | 0.46× |
+| `bytes + 300` | yes | 1.42× |
+| `bytes + 400` | yes | 1.74× |
+| **`bytes + 512`** | **yes** | **1.84×** |
+
+## Adopted
+
+**`requestBytes + 512 ≤ 30,000`.**
+
+- The **512** covers fixed framing that the API counts but the client does not
+  send.
+- The **1 byte = 1 token** term is conservative for the variable part: the
+  worst measured variable ratio was **1.86 bytes/token** (ascii).
+- 30,000 leaves margin under the ~32,850-token ceiling in SPEC §4.6.
 
 ## Caveats
 
-- The request here is one Choice question. A four-question request (§5.1) has
-  more fixed overhead, which §7.3 accounts for explicitly rather than folding
-  into this ratio.
-- Non-ASCII labels raise the ratio, so byte budgeting is *more* conservative
-  for them, not less.
-- Measured against `jev-latest` on 2026-10-02. Re-measure if the model alias
-  moves; `eval-live` records the resolved model id.
+- Measured against `jev-latest` on 2026-10-02. Framing size is an implementation
+  detail that could change with the alias; `eval-live` records the resolved
+  model id, and §9 re-measures.
+- The 512 allowance is empirical, not contractual. It is validated by the seven
+  samples above, spanning the full observed range.
+- A request smaller than ~150 bytes would be dominated by framing. jevscope's
+  real requests carry a 24-candidate table, so they sit in the large regime
+  where the bound has ~1.8× margin.

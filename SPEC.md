@@ -362,7 +362,11 @@ token, so a stale approval cannot be silently reused.
 2. Snapshot generation matches the decision.
 3. `AXUIElementCopyActionNames` still contains the required action (or the
    attribute is still settable).
-4. Element still reports `enabled != false`.
+4. Element reports `enabled == true` — **explicitly true, not merely
+   `!= false`**. In Swift `Bool?` with a `nil` value satisfies `!= false`, so
+   the looser form **fails open** on an unknown-enabled element. A `nil`
+   reading is `refused(.enabledUnknown)`, never an approval.
+   (Verified: `nil != false` evaluates to `true`.)
 5. **Same-role substitution is explicitly out of scope of detection** and is
    disclosed (§6.5).
 
@@ -423,12 +427,26 @@ Safari 784 → 59; TextEdit 470 → 9.
 ### 7.3 Budget — bytes, not guessed tokens
 There is no official tokenizer. Rather than the v1 `chars/3.5` estimate (which
 codex correctly rejected as unverified), jevscope budgets on **UTF-8 bytes of
-the fully serialized request**, at **1 token ≤ 1 byte** — conservative, since
-measured 800 elements ≈ 32,800 bytes ≈ 32,891 tokens.
+the fully serialized request, plus a fixed allowance for model framing**.
 
-Budget: **28,000 bytes**, covering `goal`, all four `instructions`, all `criteria`
-(with the full candidate table duplicated into `target`), the element table, and
-model framing.
+> **Correction.** v2 claimed `1 token ≤ 1 byte`. Codex's live check refuted it:
+> a **139-byte** request reported **304** input tokens. The model counts framing
+> that is not in the request body, so small requests exceed 1 token per byte.
+> v2's own measurements missed this because every sample was large enough to
+> amortise the constant away.
+
+Measured across seven requests spanning 139 B – 87 KB:
+
+| bound | covers all? | worst margin |
+|---|---|---|
+| `bytes` | **no** | 0.46× |
+| `bytes + 300` | yes | 1.42× |
+| **`bytes + 512`** | **yes** | **1.84×** |
+
+Adopted: **`requestBytes + 512 ≤ 30,000`**, which bounds tokens at ≤ 30,000
+against the ~32,850 ceiling in §4.6. The 512 covers framing; the 1-byte-per-token
+term is the conservative variable part, since the worst measured variable ratio
+was 1.86 bytes/token.
 
 Overflow order, deterministic:
 1. drop the `value` field from each element line;
@@ -484,7 +502,8 @@ in every corpus case.
 When several conditions hold, the **first** match in this order is reported:
 `budgetExhausted` → `axUnavailable` → `incompleteSnapshot` → `invalidAnswer` →
 `lowConfidence` → `unknownHandle` → `unsupportedAction` → `ambiguousNoul` →
-`approvalRequired` → `staleApproval` → `fingerprintChanged` → `ambiguousName`.
+`approvalRequired` → `staleApproval` → `fingerprintChanged` → `enabledUnknown` →
+`ambiguousName`.
 
 ### 8.4 Fake backend contract
 `ScriptedBackend` replays a transition list and records an **action log**.
