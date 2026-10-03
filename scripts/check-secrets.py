@@ -46,8 +46,17 @@ def fail(msg: str) -> None:
 
 
 def parse_env(path: Path) -> bytes:
-    """Minimal, strict dotenv read: KEY=value, optional quotes, no inline
-    comment handling (a '#' inside a quoted value is data, not a comment)."""
+    """Read KEY=value from .env.
+
+    A quoted value is taken verbatim, so a '#' inside quotes stays data. An
+    unquoted value is truncated at an inline comment, which dotenv treats as
+    starting at whitespace-then-'#'.
+
+    The comment rule matters for correctness, not tidiness: without it the
+    needle becomes key-plus-comment, which can never match the bare key in a
+    file, and exact-key matching fails SILENTLY whenever .env carries a
+    trailing comment. (Found by Executor alpha; confirmed by the reviewer.)
+    """
     if not path.is_file():
         fail(f"{path.name} not found; copy .env.example to .env")
     for raw in path.read_text(errors="replace").splitlines():
@@ -60,6 +69,8 @@ def parse_env(path: Path) -> bytes:
         val = val.strip()
         if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
             val = val[1:-1]
+        else:
+            val = re.split(r"\s+#", val, maxsplit=1)[0].strip()
         if not val:
             fail(f"{ENV_NAME} is empty in {path.name}")
         return val.encode()
@@ -89,10 +100,18 @@ def index_bytes(repo: Path, rel: str) -> bytes:
 
 
 def redact(data: bytes, needles: tuple[bytes, ...]) -> bytes:
+    """Remove the configured key AND anything matching a credential shape.
+
+    Redacting only the configured key is insufficient: a token of a known
+    shape found in a filename would still be echoed with the printed path.
+    (Found by Executor alpha; confirmed by the reviewer.)
+    """
     out = data
     for n in needles:
         if n:
             out = out.replace(n, REDACT)
+    for pat in SHAPES:
+        out = pat.sub(REDACT, out)
     return out
 
 

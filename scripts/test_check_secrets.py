@@ -27,6 +27,10 @@ CHECKER = REPO / "scripts" / "check-secrets.py"
 # the checker is right to flag it.
 KEY_A = "jev" + "_" + "live" + "_" + "AAAA" "BBBB" "CCCC" "DDDD" "EEEE" "FFFF" "GGGG"
 KEY_B = "gh" + "o_" + "ZZZZ" "YYYY" "XXXX" "WWWW" "VVVV" "UUUU" "TTTT" "SSSS"
+# A shape the scanner does NOT know, so only exact-key matching can find it.
+# The existing inline-comment test used a KNOWN shape and therefore passed via
+# shape matching even when exact matching was broken -- false assurance.
+KEY_C = "tsk" + "_" + "C" * 24
 
 
 class Result:
@@ -36,7 +40,7 @@ class Result:
 
     @property
     def leaked(self) -> bool:
-        return KEY_A in self.out or KEY_B in self.out
+        return any(k in self.out for k in (KEY_A, KEY_B, KEY_C))
 
 
 def make_repo(key: str = KEY_A, env_comment: str = "") -> Path:
@@ -193,11 +197,44 @@ def case_no_env():
     shutil.rmtree(d, ignore_errors=True)
 
 
+def case_env_comment_unknown_shape():
+    """Regression for a silent FALSE NEGATIVE.
+
+    With an unknown-shape key and a trailing comment in .env, the parser used
+    to build a needle of key+comment, which can never match the bare key. The
+    pre-existing inline-comment test used a KNOWN shape and passed via shape
+    matching, so it never exercised exact matching at all.
+    """
+    d = make_repo(key=KEY_C, env_comment="operator note")
+    (d / "planted.md").write_text(f"value={KEY_C}\n")
+    subprocess.run(["git", "-C", str(d), "add", "-A"], check=True)
+    r = run(d)
+    record("unknown-shape key + inline comment -> exit 1 (was a silent miss)",
+           r.code == 1, f"code={r.code}")
+    record("  ... and not echoed", not r.leaked)
+    shutil.rmtree(d, ignore_errors=True)
+
+
+def case_shape_token_in_filename_not_disclosed():
+    """Regression for partial disclosure: shape-matched tokens must be
+    redacted from printed paths, not just the configured key."""
+    d = make_repo(key=KEY_C)
+    (d / f"report-{KEY_A}.md").write_text("clean\n")
+    subprocess.run(["git", "-C", str(d), "add", "-A"], check=True)
+    r = run(d)
+    record("shape token in filename -> exit 1", r.code == 1, f"code={r.code}")
+    record("  ... and the token is NOT echoed via the path", not r.leaked)
+    record("  ... and a path is still reported", "report-" in r.out)
+    shutil.rmtree(d, ignore_errors=True)
+
+
 def main() -> int:
     for fn in (case_clean, case_secret_in_file, case_placeholder_doc,
                case_secret_in_checker_itself, case_oversized,
                case_staged_not_in_worktree, case_env_inline_comment,
                case_untracked_is_not_scanned, case_secret_in_filename,
+               case_env_comment_unknown_shape,
+               case_shape_token_in_filename_not_disclosed,
                case_second_credential_same_prefix, case_no_env):
         fn()
     passed = sum(1 for _, ok, _ in RESULTS if ok)
