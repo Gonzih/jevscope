@@ -20,10 +20,14 @@ TextEdit     AXPopUpButton   Where:                                 String(...) 
    0/1, Safari radios as CFBoolean. So 'AXValue changed from the
    pre-dispatch value' is a real, workable confirmation for press on
    AXRadioButton and AXCheckBox.
-2. AXMenuButton AXValue is UNREADABLE, so a press on a menu button has NO
-   reliable confirmation predicate. This is direct support for the SPEC 6.4
-   rule that press on any other role yields unknownOutcome rather than
-   applied -- the state simply cannot be observed.
+2. AXMenuButton AXValue was UNREADABLE in this sample. That does **not** prove
+   that no confirmation predicate exists for it: AXPopUpButton in the same run
+   exposed a readable String value, so apps vary in what they publish. The
+   honest statement is that a *generic* AXValue predicate is unavailable for
+   that role, which is why SPEC 6.4 permits a per-target, operator-registered
+   predicate and falls back to unknownOutcome when none applies.
+   (An earlier revision of this file inferred "NO reliable predicate exists"
+   from the unreadable value. That inference was wrong; Codex caught it.)
 3. CORRECTION: kAXSelectedValueAttribute does NOT exist in the macOS 27
    SDK (compiler: cannot find in scope). kAXSelectedAttribute does, but is
    itself unsupported on most elements. Any implementation attempting this

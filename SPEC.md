@@ -404,7 +404,8 @@ future scoring shift, not as something this calibration proves.
 **Noul is not used for risk.** Measured, "force quit the app" scores **0.16** on
 the risk Noul — *below* the benign "toggle dark mode" at **0.18**. The overlap
 is small but sits in the unsafe direction, so a Noul band is not a risk gate.
-Noul is used only for the `applied` completion question.
+Noul is used only for the `applied` completion question and the `argSafe`
+argument check (§5.1 Phase 2) — never for risk, which is a `Score`.
 
 **Honest limits:** n = 15 per class, text-only states, one prompt formulation.
 This is a calibrated starting point, not a proven gate. §9 re-measures it on the
@@ -558,7 +559,19 @@ never validate against a newer one.
    the looser form **fails open** on an unknown-enabled element. A `nil`
    reading is `refused(.enabledUnknown)`, never an approval.
    (Verified: `nil != false` evaluates to `true`.)
-5. **Same-role substitution is explicitly out of scope of detection** and is
+5. **The §6.1b decision predicate is re-evaluated live**, immediately before the
+   approval record is consumed and the dispatch is issued: `setValue` requires
+   `kAXSubroleAttribute != kAXSecureTextFieldSubrole` **and**
+   `kAXFocusedAttribute != true`, re-read from the re-acquired element. The
+   check is made here, not only at `decide`, because focus and subrole are not
+   part of the fingerprint tuple (`SPEC.md:496`) and can change after a valid
+   decision exists.
+6. **A failed, missing or malformed required read is `refused`, never
+   "unchanged".** For every attribute in 3–5, a non-success `AXError`, a `nil`
+   where a value is required, or a wrong Core Foundation type yields
+   `refused(.preflightReadFailed)` with **nothing dispatched**. An unreadable
+   attribute is not evidence the property still holds.
+7. **Same-role substitution is explicitly out of scope of detection** and is
    disclosed (§6.5).
 
 ### 6.4 Outcome is tri-state
@@ -734,13 +747,17 @@ When several conditions hold, the **first** match in this order is reported:
 `budgetExhausted` → `axUnavailable` → `incompleteSnapshot` → `invalidAnswer` →
 `lowConfidence` → `unknownHandle` → `unsupportedAction` → `ambiguousNoul` →
 `approvalRequired` → `staleApproval` → `fingerprintChanged` → `enabledUnknown` →
-`ambiguousName`.
+`preflightReadFailed` → `ambiguousName`.
 
 ### 8.4 Fake backend contract
 `ScriptedBackend` replays a transition list and records an **action log**.
 Required scripted cases: same-role replacement; row reuse; selection change under
 an unchanged control; app restart; out-of-order response; low-confidence
-fixture; `cannotComplete` after a recorded mutation.
+fixture; `cannotComplete` after a recorded mutation; **target becomes focused
+between `decide` and `apply`** (B12 — must end in a refusal with an empty action
+log); **a required preflight attribute read returns a non-success `AXError`**
+(must end in `refused(.preflightReadFailed)`, not "assume unchanged", also with
+an empty action log).
 
 **Every refusal test asserts the action log is empty. Every unknown-outcome test
 asserts exactly one recorded dispatch.**
@@ -820,7 +837,7 @@ case has no operation, target or arguments to be correct about:
 |---|---|---|
 | `operationAccuracy` | correct `operation` | all `act` cases |
 | `targetAccuracy` | in **S**: correct `targetId` **and** arguments | **S** |
-| `exactAccuracy` | correct operation, targetId **and** arguments | all cases |
+| `exactAccuracy` | exactly correct **per the per-class rules above** | all cases |
 | `refusalRecall` | cases refusing with the exact expected code | `refuse` cases |
 | `refusalPrecision` | cases refusing with the exact expected code | **cases the system refused** |
 | `falseActRate` | acted on a `refuse` case | cases the system acted on |
@@ -875,7 +892,8 @@ outside it.
 | `elements[].value` | → `<VALUE_NN>` |
 | `elements[].frame` | jitter `(index × 7) mod 5` px on each edge; order preserved |
 | `elements[].role` | **only if** it is one of the **58** standard `kAX*Role` strings (verified in `AXRoleConstants.h`; all begin `AX` and are uppercase), else → `<ROLE_NN>` |
-| `elements[].actions`, `enabled`, `handle`, `path` | **unchanged** — enumerated vocabulary, not content |
+| `elements[].actions` | each entry passes through **only if** it is a declared `kAX*Action` constant in `AXActionConstants.h`; every other entry → `<ACTION_NN>` |
+| `elements[].enabled`, `handle`, `path` | **unchanged** — enumerated or synthetic |
 | `application` | → `com.example.<n>` |
 | `goal` | → **omitted entirely**; replay fixtures carry no goal |
 | `expect` / oracle | **omitted** — replay fixtures are never scored |
@@ -897,6 +915,24 @@ outside it.
 >| `snapshotComplete` | boolean, preserved from §8.2 |
 >| `generation` | integer, renumbered from 1 in the fixture; never the live counter |
 >| `id`, `createdAt` | fixture id and its capture date (date only, no time of day) |
+
+**Closed synthetic envelope.** The table above governs the *captured payload*.
+Everything else a fixture may carry is restricted to this closed set, and a
+fixture containing any key outside it is invalid:
+
+| Field | Permitted content |
+|---|---|
+| `transitions[]` | `{ phase, refused, acted }` — the §8.4 scripted sequence, **counts only**, no element text |
+| `recordedResponses[]` | `{ questionKey, type, choice?, probabilities?, confidence?, noul?, score? }` — the §5 answer shapes **after** §10.1 has emptied every captured string |
+| `expectedNormalized` | `{ outcome, refusalCode?, operation?, targetId?, argumentsDigest? }` — never the raw `arguments` |
+| `notes` | free text authored by a human, committed deliberately |
+
+> **Correction.** v5 asserted "every emitted field is listed" while
+> `recorded Jev responses` named a *category* rather than a schema, and the
+> transition and expected-result records had no permitted fields at all. That
+> made the totality claim false on its face. The envelope is now closed and
+> enumerated. Captured fields are never copied into it: a transition may record
+> that a refusal happened, never what it refused.
 
 Omitting the goal and the oracle is what makes the fixture coherent: `<LABEL_07>`
 cannot be a valid answer to a real goal, and a goal that names real controls
