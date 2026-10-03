@@ -225,7 +225,14 @@ so explicitly.
 4. `choice` is a member of `probabilities`.
 5. `confidence` finite and in `[0,1]` (Choice, Score only).
 6. `noul` finite and in `[0,1]`.
-7. Any tie in `probabilities` is a **hard error**, never an arbitrary pick.
+7. Any tie for the maximum in `probabilities` is a **hard error**, never an
+   arbitrary pick.
+8. **`choice` must equal `argmax(probabilities)`** (within the 0.02 tolerance
+   used above). Otherwise `invalidAnswer`. Gating on the top probability while
+   dispatching a different option would be unsound, so this consistency is
+   required rather than assumed.
+9. The `p_max` used by the §5.3 gate is recomputed from `probabilities`, never
+   read from `confidence`, which is only an affine function of it (§5.4).
 
 Errors **never** default to zero, the first option, a guessed handle, or success.
 
@@ -234,8 +241,10 @@ Errors **never** default to zero, the first option, a guessed handle, or success
 ```
 no_action   if operation == "none"                    -> Decision(action: .none)
 no_action   if target    == "none"                    -> Decision(action: .none)
-refused     if operation confidence < 0.85            -> lowConfidence
-refused     if target    confidence < 0.85            -> lowConfidence
+refused     if operation fails its gate (confidence < 0.85 OR p_max < 0.80)
+                                                    -> lowConfidence
+refused     if target    fails its gate (confidence < 0.85 OR p_max < 0.80)
+                                                    -> lowConfidence
 refused     if target.handle is not a candidate in THIS snapshot
                                                     -> unknownHandle
 refused     unless risk.score <= 0.20 AND risk.confidence >= 0.85
@@ -255,6 +264,29 @@ Finite configuration required, with `0 ≤ loT < 0.5 < hiT ≤ 1`; boundaries ar
 **inclusive**: `noul ≥ hiT` ⇒ yes, `noul ≤ loT` ⇒ no, otherwise `ambiguousNoul`.
 Defaults: `operationConfidence 0.85`, `targetConfidence 0.85`,
 `riskScoreMax 0.20`, `riskConfidenceMin 0.85`, `noulLoT 0.20`, `noulHiT 0.80`.
+
+**Every Choice gate is two-sided.** Confidence alone is not a fixed bar, because
+the affine map depends on the number of options
+(`evidence/choice-confidence-affine.md`, 18 samples, max error 0.015):
+
+| options n | confidence ≥ 0.85 ⟺ p_max ≥ | options n | confidence ≥ 0.85 ⟺ p_max ≥ |
+|---|---|---|---|
+| 2 | 0.850 | 24 | 0.3975 |
+| 3 | 0.900 | 255 | 0.3367 |
+
+Inverting: `p_max = confidence · (1 − 1/n) + 1/n`.
+
+With K = 24 candidates a 0.85 confidence threshold alone would admit
+**p_max ≈ 0.40** — a genuinely ambiguous answer. So each Choice gate requires
+**both**:
+
+```
+confidence ≥ threshold   AND   p_max ≥ pMaxFloor (default 0.80)
+```
+
+`pMaxFloor` is absolute and therefore **candidate-count independent**, which is
+the whole point. The corpus records both the confidence and the full
+probability vector, because only the vector compares across K sweeps.
 
 The `applied` Noul gates **completion**, not permission: `applied ≥ 0.80` ⇒
 `Decision(action: .alreadyDone)`, `applied ≤ 0.20` ⇒ proceed, else
